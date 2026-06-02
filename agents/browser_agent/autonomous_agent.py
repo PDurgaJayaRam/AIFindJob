@@ -386,20 +386,24 @@ Respond with ONLY a JSON object:
 
         return {}
 
-    async def _scroll_and_extract(self, max_scrolls: int = 3) -> List[Dict]:
+    async def _scroll_and_extract(self, max_scrolls: int = 3, portal: str = "") -> List[Dict]:
         """Scroll page and extract jobs at each position."""
         all_jobs = []
 
-        for i in range(max_scrolls):
+        # Glassdoor uses infinite scroll — more scrolls needed
+        scrolls = max_scrolls + 2 if portal == "glassdoor" else max_scrolls
+
+        for i in range(scrolls):
             # Extract from current position
             jobs = await self._extract_jobs_from_listing()
             for job in jobs:
                 if not any(j.get("title") == job.get("title") and j.get("company") == job.get("company") for j in all_jobs):
                     all_jobs.append(job)
 
-            # Scroll down
-            await self.browser.scroll("down", 800)
-            await self.browser.wait(1)
+            # Random scroll amount to appear human-like
+            scroll_px = random.randint(500, 1200)
+            await self.browser.scroll("down", scroll_px)
+            await asyncio.sleep(random.uniform(0.8, 2.0))
 
         return all_jobs
 
@@ -433,7 +437,7 @@ Respond with ONLY a JSON object:
             self._log(f"Extracting page {page_num}...")
 
             # Extract jobs from current page
-            page_jobs = await self._scroll_and_extract(max_scrolls=3)
+            page_jobs = await self._scroll_and_extract(max_scrolls=3, portal=portal)
             for job in page_jobs:
                 if not any(j.get("title") == job.get("title") and j.get("company") == job.get("company") for j in all_jobs):
                     all_jobs.append(job)
@@ -561,13 +565,11 @@ Respond with ONLY a JSON object:
                         time_up = True
                         break
 
-                    # Extra delay before Glassdoor to avoid anti-bot CAPTCHA
+                    # Skip Glassdoor entirely if Cloudflare blocked it
                     if portal == "glassdoor":
-                        # Skip Glassdoor entirely if it was blocked in a previous keyword round
                         if getattr(self, '_glassdoor_blocked', False):
-                            self._log(f"Glassdoor previously blocked — skipping")
+                            self._log(f"Glassdoor blocked by Cloudflare — skipping")
                             continue
-                        await asyncio.sleep(random.uniform(8, 15))
 
                     try:
                         portal_jobs = await asyncio.wait_for(
@@ -579,10 +581,25 @@ Respond with ONLY a JSON object:
                     except asyncio.TimeoutError:
                         self._log(f"Portal {portal} [{kw}]: timed out after 180s, moving on")
                     except Exception as e:
-                        self._log(f"Portal {portal} [{kw}]: failed with {type(e).__name__}: {e}")
+                        err_msg = str(e)
+                        self._log(f"Portal {portal} [{kw}]: failed with {type(e).__name__}: {err_msg[:100]}")
+                        # Browser crash recovery — relaunch if context/page died
+                        if "TargetClosedError" in type(e).__name__ or "closed" in err_msg.lower():
+                            self._log("Browser crashed — attempting recovery...")
+                            try:
+                                await self.browser.close()
+                            except:
+                                pass
+                            try:
+                                self.browser = BrowserController(headless=False)
+                                await self.browser.launch()
+                                self._log("Browser recovered successfully")
+                            except Exception as recover_err:
+                                self._log(f"Browser recovery failed: {recover_err}")
+                                browser_dead = True
+                                break
 
                     # Anti-detection delay between portals (random 3-7s)
-                    import random
                     delay = random.uniform(3, 7)
                     await asyncio.sleep(delay)
 
@@ -684,11 +701,11 @@ Respond with ONLY a JSON object:
                     "unusual traffic" in page_content_lower,
                 ]
                 if any(captcha_signals):
-                    self._log(f"BLOCKED: {portal} returned anti-bot challenge for '{kw}' — skipping keyword")
-                    # Mark Glassdoor as blocked so we skip it for remaining keywords
+                    self._log(f"BLOCKED: {portal} returned anti-bot challenge for '{kw}' — skipping")
+                    # Mark Glassdoor as blocked so we skip it for ALL remaining keywords
                     if portal == "glassdoor":
                         self._glassdoor_blocked = True
-                    break  # Skip to next keyword/portal
+                    break  # Skip to next keyword/portal immediately
             except:
                 pass
 
@@ -799,7 +816,6 @@ Respond with ONLY a JSON object:
                             job["description"] = ""
                             has_desc = False
                     if not has_desc and job_url and api_detail_visits < 15:
-                        import random
                         await asyncio.sleep(random.uniform(1.5, 3.5))
                         api_detail_visits += 1
                         detailed = await self._open_job_and_extract(job_url)
@@ -848,7 +864,6 @@ Respond with ONLY a JSON object:
 
                 if not has_desc and job_url:
                     # Random delay between detail page visits to avoid anti-bot detection
-                    import random
                     await asyncio.sleep(random.uniform(1.5, 3.5))
                     detailed = await self._open_job_and_extract(job_url)
                     # Close any extra tabs opened by the detail page
@@ -1114,6 +1129,13 @@ Respond with ONLY a JSON object:
             "button:has-text('Accept')",
             "button:has-text('Reject')",
             "button:has-text('Close')",
+            # Glassdoor login/sign-up modal
+            "button[aria-label='Close']",
+            "span.SVGInline.modal_closeIcon",
+            "button.e1jbct4g0",
+            "[class*='modal'] button[class*='close']",
+            "button:has-text('Dismiss')",
+            "span[class*='closeIcon']",
         ]
 
         for selector in close_selectors:
@@ -1151,6 +1173,29 @@ Respond with ONLY a JSON object:
         Experience filtering is done post-scrape by _filter_jobs()."""
         # Always try fast DOM popup closing first (~1 second)
         await self._close_popups()
+
+        # Glassdoor: dismiss login/sign-up modal that blocks the page
+        if "glassdoor" in (self.browser.page.url or "").lower():
+            for sel in [
+                "span.SVGInline.modal_closeIcon",
+                "button[aria-label='Close']",
+                "[class*='modal'] button[class*='close']",
+                "span[class*='closeIcon']",
+                "button.e1jbct4g0",
+            ]:
+                try:
+                    await self.browser.page.click(sel, timeout=1500)
+                    self._log("Dismissed Glassdoor login modal")
+                    await asyncio.sleep(1)
+                    break
+                except:
+                    continue
+            # Also try pressing Escape
+            try:
+                await self.browser.page.keyboard.press("Escape")
+                await asyncio.sleep(0.5)
+            except:
+                pass
 
         # Check if job listings are already visible (most portals work fine)
         try:

@@ -50,7 +50,7 @@ PORTALS: Dict[str, Dict] = {
     "glassdoor_in": {
         "name": "Glassdoor India",
         "base_url": "https://www.glassdoor.co.in",
-        "search_url": "https://www.glassdoor.co.in/Job/{query}-jobs-SRCH_KO0,4.htm",
+        "search_url": "https://www.glassdoor.co.in/Job/{query}-{location}-jobs-SRCH_IL.0,{loc_len}_KO{kw_start},{kw_end}.htm",
         "country": "in",
     },
     "indeed_us": {
@@ -68,7 +68,7 @@ PORTALS: Dict[str, Dict] = {
     "glassdoor_us": {
         "name": "Glassdoor USA",
         "base_url": "https://www.glassdoor.com",
-        "search_url": "https://www.glassdoor.com/Job/{query}-jobs-SRCH_KO0,4.htm",
+        "search_url": "https://www.glassdoor.com/Job/{query}-{location}-jobs-SRCH_IL.0,{loc_len}_KO{kw_start},{kw_end}.htm",
         "country": "us",
     },
     "ziprecruiter": {
@@ -99,18 +99,30 @@ class PortalAdapter:
         """Build search URL for a portal with query parameters."""
         if portal_name not in PORTALS:
             raise ValueError(f"Unknown portal: {portal_name}")
-        
+
         config = PORTALS[portal_name]
         encoded_query = quote(query)
         encoded_location = quote(location) if location else ""
-        
+
         search_url = config["search_url"]
-        
-        if "{query}" in search_url:
-            search_url = search_url.replace("{query}", encoded_query)
-        if "{location}" in search_url:
-            search_url = search_url.replace("{location}", encoded_location)
-        
+
+        # Glassdoor needs dynamic offset calculation for SRCH_IL and KO parameters
+        if "glassdoor" in portal_name and "{kw_start}" in search_url:
+            loc_dash = location.replace(" ", "-")
+            kw_dash = query.replace(" ", "-")
+            ko_start = len(loc_dash) + 1
+            ko_end = ko_start + len(kw_dash)
+            search_url = search_url.replace("{query}", kw_dash)
+            search_url = search_url.replace("{location}", loc_dash)
+            search_url = search_url.replace("{loc_len}", str(len(loc_dash)))
+            search_url = search_url.replace("{kw_start}", str(ko_start))
+            search_url = search_url.replace("{kw_end}", str(ko_end))
+        else:
+            if "{query}" in search_url:
+                search_url = search_url.replace("{query}", encoded_query)
+            if "{location}" in search_url:
+                search_url = search_url.replace("{location}", encoded_location)
+
         return search_url
 
     def get_portal_config(self, portal_name: str) -> Dict:

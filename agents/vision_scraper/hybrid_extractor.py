@@ -231,6 +231,72 @@ GENERIC_EXTRACTION_JS = """() => {
     return jobs;
 }"""
 
+GLASSDOOR_EXTRACTION_JS = r"""() => {
+    const jobs = [];
+    const seenUrls = new Set();
+    // Glassdoor uses /job-listing/ links for job cards
+    const allLinks = document.querySelectorAll('a[href*="/job-listing/"], a[data-job-listing]');
+    for (const link of allLinks) {
+        const href = link.href || '';
+        const text = link.innerText?.trim() || '';
+        if (!href || seenUrls.has(href)) continue;
+        if (text.length < 4 || text.length > 150) continue;
+        seenUrls.add(href);
+        let card = link.closest('div[class*="job"], div[class*="card"], article, li, section');
+        let company = '';
+        let location = 'Not specified';
+        let posted_text = '';
+        let lines = [];
+        if (card) {
+            lines = card.innerText?.split('\n').map(l => l.trim()).filter(l => l.length > 0) || [];
+            for (const line of lines) {
+                if (line === text) continue;
+                if (line.length > 2 && line.length < 80 && /^[A-Z][a-zA-Z\s.&()'\-]+$/.test(line)) {
+                    company = line;
+                    break;
+                }
+            }
+            for (const line of lines) {
+                if (line.toLowerCase().includes('ago') || /^\d+[dhm]\+?\s*(ago)?$/.test(line)) {
+                    posted_text = line;
+                    break;
+                }
+            }
+            for (const line of lines) {
+                if ((line.includes(',') || /hyderabad|bangalore|mumbai|delhi|pune|chennai|remote|india/i.test(line))
+                    && line !== text && line !== company && line.length < 80) {
+                    location = line;
+                    break;
+                }
+            }
+            if (!company) {
+                for (const line of lines) {
+                    if (line !== text && line.length > 2 && line.length < 80
+                        && !line.toLowerCase().includes('ago') && !line.includes(',')
+                        && !/^\d+[dhm]/.test(line)) {
+                        company = line;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!company) company = 'Unknown';
+        jobs.push({
+            title: text,
+            company: company,
+            location: location,
+            source: 'glassdoor',
+            source_url: href,
+            apply_url: href,
+            salary: '',
+            description: '',
+            experience_required: '',
+            posted_text: posted_text
+        });
+    }
+    return jobs;
+}"""
+
 PORTAL_JS_MAP = {
     "naukri": NAUKRI_EXTRACTION_JS,
     "linkedin": LINKEDIN_EXTRACTION_JS,
@@ -238,6 +304,8 @@ PORTAL_JS_MAP = {
     "indeed_in": INDEED_EXTRACTION_JS,
     "indeed_us": INDEED_EXTRACTION_JS,
     "timesjobs": TIMESJOBS_EXTRACTION_JS,
+    "glassdoor_in": GLASSDOOR_EXTRACTION_JS,
+    "glassdoor_us": GLASSDOOR_EXTRACTION_JS,
 }
 
 

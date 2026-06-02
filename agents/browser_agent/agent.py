@@ -72,7 +72,7 @@ class BrowserAgent:
         self._keywords = keywords or "python java sql"
         self._is_fresher = is_fresher
         self._location = location
-        self._portals = portals or ["naukri", "linkedin", "cutshort", "glassdoor", "timesjobs", "shine", "foundit", "indeed"]
+        self._portals = portals or ["naukri", "linkedin", "cutshort", "timesjobs", "shine", "foundit", "indeed"]
 
         try:
             all_jobs = await self.autonomous.run_task(

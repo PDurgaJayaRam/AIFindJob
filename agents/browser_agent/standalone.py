@@ -23,7 +23,7 @@ async def main():
     target = int(sys.argv[3]) if len(sys.argv) > 3 else 20
     headless = sys.argv[4].lower() == "true" if len(sys.argv) > 4 else False
     is_fresher = sys.argv[5].lower() == "true" if len(sys.argv) > 5 else False
-    portals = sys.argv[6] if len(sys.argv) > 6 else "naukri,linkedin,cutshort,glassdoor,timesjobs,shine,foundit,indeed"
+    portals = sys.argv[6] if len(sys.argv) > 6 else "naukri,linkedin,cutshort,timesjobs,shine,foundit,indeed"
     is_us = sys.argv[7].lower() == "true" if len(sys.argv) > 7 else False
 
     logger.info(f"Starting: query={query}, location={location}, target={target}, fresher={is_fresher}, us={is_us}")
