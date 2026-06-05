@@ -185,6 +185,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Phase 1: shared multi-source ingestion engine (mounted under /ingestion).
+from ingestion.router import router as ingestion_router
+app.include_router(ingestion_router)
+
 # Rate limiting for scraping endpoints
 from rate_limiter import RateLimitMiddleware
 app.add_middleware(RateLimitMiddleware)
