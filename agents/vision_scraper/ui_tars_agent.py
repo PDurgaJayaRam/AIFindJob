@@ -1,4 +1,8 @@
-"""UI-TARS Agent - General purpose autonomous agent like UI-TARS Desktop."""
+"""
+UI-TARS Agent - Enhanced with NVIDIA NIM free vision models.
+Can do ANY task: scrape jobs, apply to jobs, fill forms, click buttons, etc.
+Uses free NVIDIA NIM endpoints (no API cost).
+"""
 
 import os
 import re
@@ -6,63 +10,111 @@ import time
 import json
 import base64
 import logging
+import requests
 from typing import List, Optional, Dict, Any
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Official UI-TARS prompt template
-UI_TARS_SYSTEM_PROMPT = """You are a GUI agent. You are given a task and your action history, with screenshots. You need to perform the next action to complete the task.
+# ─── NVIDIA NIM Free Vision Models ────────────────────────────────────────────
+# All these are FREE on NVIDIA NIM (build.nvidia.com)
+NVIDIA_NIM_MODELS = {
+    # Best for GUI agent tasks (vision + reasoning)
+    "llama-3.2-90b-vision-instruct": {
+        "name": "Llama 3.2 90B Vision",
+        "description": "Best quality, 90B params, excellent GUI understanding",
+        "endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+        "max_tokens": 1000,
+    },
+    "llama-3.2-11b-vision-instruct": {
+        "name": "Llama 3.2 11B Vision",
+        "description": "Good quality, faster, 11B params",
+        "endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+        "max_tokens": 1000,
+    },
+    "cosmos3-nano-reasoner": {
+        "name": "Cosmos3 Nano Reasoner",
+        "description": "NVIDIA's own, great for physical world understanding",
+        "endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+        "max_tokens": 1000,
+    },
+}
+
+# Default model (best free option)
+DEFAULT_MODEL = "llama-3.2-90b-vision-instruct"
+
+# ─── UI-TARS System Prompt ────────────────────────────────────────────────────
+UI_TARS_SYSTEM_PROMPT = """You are a powerful GUI agent. You can see the screen and perform any task on a computer.
+
+You are given a task and your action history, with screenshots. You need to perform the next action to complete the task.
 
 ## Output Format
-
-Thought: ...
-Action: ...
+Thought: [Your reasoning about what you see and what to do next]
+Action: [The exact action to take]
 
 ## Action Space
+click(point='<point>x1 y1</point>')  - Click at coordinates (x,y in pixels)
+type(content='xxx')  - Type text into focused element
+scroll(direction='down')  - Scroll up or down
+wait()  - Wait for page to load
+hotkey(key='enter')  - Press keyboard shortcut
+finished()  - Task is complete
+goto(url='https://...')  - Navigate to URL
+extract_data()  - Extract visible text/data from page
+screenshot()  - Take a screenshot for analysis
 
-click(point='<point>x1 y1</point>')
-type(content='xxx')
-scroll(direction='down')
-wait()
-hotkey(key='enter')
-finished()
-
-## Note
-
-- Use English in Thought part.
-- Write a small plan and finally summarize your next action in one sentence in Thought part.
-- If you see a popup/cookie banner, click the close button or 'Accept' first.
-- If you see a search box, type the query into it then click the search button.
-- If the task is completed, return finished().
-- DO NOT use markdown code blocks. Output plain text only."""
+## Important Rules
+- Coordinates are in pixels (0-1920 for x, 0-1080 for y typically)
+- Always think step by step before acting
+- If you see a search box, type the query then click search
+- If you see a form, fill it field by field
+- If you see a button that advances the task, click it
+- If the task is completed, return finished()
+- DO NOT use markdown code blocks. Output plain text only.
+- Be precise with coordinates - look at the screenshot carefully
+"""
 
 
 class UITarsAgent:
-    """UI-TARS autonomous agent - works like UI-TARS Desktop.
+    """
+    Enhanced UI-TARS Agent using NVIDIA NIM free vision models.
+    
+    Can perform ANY computer task:
+    - Scrape job listings from portals
+    - Apply to jobs (fill forms, upload resume)
+    - Navigate websites
+    - Fill out applications
+    - Click buttons, links
+    - Extract data from pages
+    - And much more...
     
     Usage:
-        agent = UITarsAgent(browser, mistral_api_key)
-        result = await agent.run("Open YouTube and search for 'sao paulo song'")
+        agent = UITarsAgent(browser, nvidia_api_key)
+        result = await agent.run("Go to naukri.com and apply to Java Developer jobs")
     """
 
     def __init__(
         self,
         browser_controller,
-        mistral_api_key: str,
-        model: str = "ministral-14b-latest",
-        max_steps: int = 25,
+        nvidia_api_key: str = None,
+        model: str = None,
+        max_steps: int = 30,
     ):
         self.browser = browser_controller
-        self.mistral_api_key = mistral_api_key
-        self.model = model
+        self.nvidia_api_key = nvidia_api_key or os.getenv("NVIDIA_API_KEY", "")
+        self.model = model or DEFAULT_MODEL
         self.max_steps = max_steps
         self._history: List[Dict] = []
         self._viewport_width = 1400
         self._viewport_height = 900
+        
+        if not self.nvidia_api_key:
+            logger.warning("No NVIDIA API key provided. Set NVIDIA_API_KEY env var.")
 
-    def _call_mistral(self, screenshot_b64: str, task: str, history_text: str) -> str:
-        """Call Mistral vision model with UI-TARS prompt."""
-        import requests
+    def _call_nvidia_nim(self, screenshot_b64: str, task: str, history_text: str) -> str:
+        """Call NVIDIA NIM vision model with UI-TARS prompt."""
+        
+        model_config = NVIDIA_NIM_MODELS.get(self.model, NVIDIA_NIM_MODELS[DEFAULT_MODEL])
         
         user_content = f"Task: {task}"
         if history_text:
@@ -85,29 +137,45 @@ class UITarsAgent:
             }
         ]
         
-        response = requests.post(
-            "https://api.mistral.ai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {self.mistral_api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": self.model,
-                "messages": messages,
-                "max_tokens": 500,
-                "temperature": 0.0,
-            },
-            timeout=60,
-        )
+        headers = {
+            "Authorization": f"Bearer {self.nvidia_api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
         
-        if response.status_code == 200:
-            return response.json()["choices"][0]["message"]["content"]
-        else:
-            raise Exception(f"Mistral API error: {response.status_code} - {response.text}")
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": model_config["max_tokens"],
+            "temperature": 0.1,  # Low temperature for precise actions
+            "top_p": 0.9,
+        }
+        
+        try:
+            response = requests.post(
+                model_config["endpoint"],
+                headers=headers,
+                json=payload,
+                timeout=90,
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                return result["choices"][0]["message"]["content"]
+            elif response.status_code == 429:
+                logger.warning("NVIDIA NIM rate limited. Waiting 5 seconds...")
+                time.sleep(5)
+                return self._call_nvidia_nim(screenshot_b64, task, history_text)
+            else:
+                raise Exception(f"NVIDIA NIM API error: {response.status_code} - {response.text}")
+                
+        except requests.exceptions.Timeout:
+            raise Exception("NVIDIA NIM API timeout. Try again.")
+        except requests.exceptions.ConnectionError:
+            raise Exception("Cannot connect to NVIDIA NIM. Check internet connection.")
 
     def _clean_response(self, text: str) -> str:
         """Remove markdown code blocks and clean response."""
-        # Remove markdown code blocks
         text = re.sub(r'```\w*\n', '', text)
         text = text.replace('```', '')
         return text.strip()
@@ -134,8 +202,8 @@ class UITarsAgent:
                 x = int(coord_match.group(1))
                 y = int(coord_match.group(2))
                 # Normalize to 0-1 scale
-                norm_x = x / 1000.0
-                norm_y = y / 1000.0
+                norm_x = x / self._viewport_width
+                norm_y = y / self._viewport_height
                 return {
                     "action_type": "click",
                     "action_inputs": {"start_box": [norm_x, norm_y]},
@@ -152,19 +220,13 @@ class UITarsAgent:
                 }
         
         elif action.startswith("scroll("):
-            dir_match = re.search(r"direction='(\w+)'", action)
-            if dir_match:
+            direction_match = re.search(r"direction='(\w+)'", action)
+            if direction_match:
                 return {
                     "action_type": "scroll",
-                    "action_inputs": {"direction": dir_match.group(1)},
+                    "action_inputs": {"direction": direction_match.group(1)},
                     "thought": thought,
                 }
-        
-        elif action.startswith("wait()"):
-            return {"action_type": "wait", "thought": thought}
-        
-        elif action.startswith("finished()") or action.startswith("finished("):
-            return {"action_type": "finished", "thought": thought}
         
         elif action.startswith("hotkey("):
             key_match = re.search(r"key='([^']+)'", action)
@@ -175,214 +237,239 @@ class UITarsAgent:
                     "thought": thought,
                 }
         
-        return {"action_type": "error", "error": f"Unknown action: {action}", "thought": thought}
+        elif action.startswith("goto("):
+            url_match = re.search(r"url='([^']+)'", action)
+            if url_match:
+                return {
+                    "action_type": "goto",
+                    "action_inputs": {"url": url_match.group(1)},
+                    "thought": thought,
+                }
+        
+        elif action.startswith("finished("):
+            return {
+                "action_type": "finished",
+                "action_inputs": {},
+                "thought": thought,
+            }
+        
+        elif action.startswith("extract_data("):
+            return {
+                "action_type": "extract_data",
+                "action_inputs": {},
+                "thought": thought,
+            }
+        
+        elif action.startswith("screenshot("):
+            return {
+                "action_type": "screenshot",
+                "action_inputs": {},
+                "thought": thought,
+            }
+        
+        elif action.startswith("wait("):
+            return {
+                "action_type": "wait",
+                "action_inputs": {},
+                "thought": thought,
+            }
+        
+        return {"action_type": "unknown", "action": action, "thought": thought}
 
-    async def _execute_action(self, parsed: Dict[str, Any]) -> bool:
-        """Execute parsed action using Playwright (inside browser)."""
+    async def _execute_action(self, parsed: Dict) -> bool:
+        """Execute a parsed action on the browser. Returns True if successful."""
         action_type = parsed.get("action_type")
         inputs = parsed.get("action_inputs", {})
         
         try:
             if action_type == "click":
-                box = inputs.get("start_box")
-                if box and len(box) >= 2:
-                    x = int(float(box[0]) * self._viewport_width)
-                    y = int(float(box[1]) * self._viewport_height)
-                    logger.info(f"CLICK at ({x}, {y})")
-                    # Use Playwright mouse (clicks inside browser)
-                    await self.browser.page.mouse.click(x, y)
-                    await self.browser.wait(1)
-                    return True
-                
-                # Fallback: click center
-                x = self._viewport_width // 2
-                y = self._viewport_height // 2
-                logger.info(f"CLICK fallback at ({x}, {y})")
-                await self.browser.page.mouse.click(x, y)
+                x, y = inputs.get("start_box", [0, 0])
+                # Convert normalized coordinates to pixels
+                pixel_x = int(x * self._viewport_width)
+                pixel_y = int(y * self._viewport_height)
+                await self.browser.click_at(pixel_x, pixel_y)
+                logger.info(f"Clicked at ({pixel_x}, {pixel_y})")
                 return True
                 
             elif action_type == "type":
                 content = inputs.get("content", "")
-                # Try to find search box, fallback to keyboard
-                try:
-                    await self.browser.page.click('#search input, input[type="search"], input[placeholder*="Search"], input[name="q"]', timeout=3000)
-                    await self.browser.wait(0.5)
-                except:
-                    # If no search box found, just type (might be already focused)
-                    pass
-                # Type content
-                await self.browser.page.keyboard.type(content)
-                await self.browser.wait(0.5)
-                # Press Enter
-                await self.browser.page.keyboard.press("Enter")
-                logger.info(f"TYPE: {content}")
+                await self.browser.type_text(content)
+                logger.info(f"Typed: {content[:50]}...")
                 return True
                 
             elif action_type == "scroll":
                 direction = inputs.get("direction", "down")
-                amount = 500 if direction == "down" else -500
-                await self.browser.page.mouse.wheel(0, amount)
-                await self.browser.wait(1)
-                logger.info(f"SCROLL {direction}")
-                return True
-                
-            elif action_type == "wait":
-                await self.browser.wait(3)
-                logger.info("WAIT 3s")
-                return True
-                
-            elif action_type == "finished":
-                logger.info("FINISHED")
+                await self.browser.scroll(direction)
+                logger.info(f"Scrolled {direction}")
                 return True
                 
             elif action_type == "hotkey":
-                key = inputs.get("key", "")
-                if key == "enter":
-                    await self.browser.page.keyboard.press("Enter")
-                else:
-                    await self.browser.page.keyboard.press(key)
-                logger.info(f"HOTKEY: {key}")
+                key = inputs.get("key", "enter")
+                await self.browser.press_key(key)
+                logger.info(f"Pressed key: {key}")
                 return True
-            
-            return False
+                
+            elif action_type == "goto":
+                url = inputs.get("url", "")
+                await self.browser.go_to(url)
+                logger.info(f"Navigated to: {url}")
+                return True
+                
+            elif action_type == "extract_data":
+                data = await self.browser.get_page_text()
+                logger.info(f"Extracted {len(data)} chars of text")
+                return True
+                
+            elif action_type == "screenshot":
+                # Screenshot is taken automatically in the loop
+                return True
+                
+            elif action_type == "wait":
+                import asyncio
+                await asyncio.sleep(2)
+                return True
+                
+            elif action_type == "finished":
+                return True
+                
+            else:
+                logger.warning(f"Unknown action type: {action_type}")
+                return False
+                
         except Exception as e:
-            logger.warning(f"Action execution failed: {e}")
-            # Don't crash - just wait and continue
-            await self.browser.wait(2)
+            logger.error(f"Action execution failed: {e}")
             return False
 
-    async def run(self, task: str, start_url: str = None) -> Dict[str, Any]:
-        """Run autonomous UI-TARS agent on any task.
+    async def run(self, task: str, callback=None) -> Dict[str, Any]:
+        """
+        Run a task using the UI-TARS agent.
         
         Args:
             task: Natural language task description
-            start_url: Optional starting URL
+            callback: Optional callback function(action_num, thought, action_type)
             
         Returns:
-            Dict with status, steps, and action history
+            Dict with status, steps taken, and results
         """
-        logger.info(f"UI-TARS: Starting task: {task}")
+        logger.info(f"Starting UI-TARS task: {task}")
         
-        # Navigate to start URL if provided
-        if start_url:
-            try:
-                await self.browser.go_to(start_url)
-                await self.browser.wait(3)
-            except Exception as e:
-                logger.error(f"Failed to navigate to {start_url}: {e}")
-                return {"status": "failed", "error": f"Navigation failed: {e}", "steps": 0}
-        
-        # Get viewport dimensions
-        try:
-            viewport = self.browser.page.viewport_size
-            if viewport:
-                self._viewport_width = viewport.get("width", 1400)
-                self._viewport_height = viewport.get("height", 900)
-        except Exception as e:
-            logger.error(f"Failed to get viewport: {e}")
-            self._viewport_width = 1400
-            self._viewport_height = 900
-        
-        history_text = ""
-        last_action = ""
-        same_action_count = 0
-        consecutive_errors = 0
+        self._history = []
+        start_time = time.time()
         
         for step in range(1, self.max_steps + 1):
-            logger.info(f"UI-TARS Step {step}/{self.max_steps}")
+            logger.info(f"Step {step}/{self.max_steps}")
             
-            # Check if browser is still running
-            if self.browser.is_browser_crashed():
-                return {"status": "failed", "error": "Browser crashed", "steps": step}
-            
-            # Take screenshot
             try:
-                screenshot = await self.browser.take_screenshot()
-                if isinstance(screenshot, str) and screenshot.startswith("screenshot_error"):
-                    return {"status": "failed", "error": f"Screenshot failed: {screenshot}", "steps": step}
-            except Exception as e:
-                logger.error(f"Screenshot failed: {e}")
-                consecutive_errors += 1
-                if consecutive_errors >= 3:
-                    return {"status": "failed", "error": f"Too many errors: {e}", "steps": step}
-                await self.browser.wait(2)
-                continue
-            
-            # Convert to base64
-            if isinstance(screenshot, bytes):
-                screenshot_b64 = base64.b64encode(screenshot).decode("utf-8")
-            else:
-                screenshot_b64 = screenshot
-            
-            # Call Mistral vision model
-            try:
-                response_text = self._call_mistral(screenshot_b64, task, history_text)
-                logger.info(f"UI-TARS Response: {response_text[:300]}")
+                # Take screenshot
+                screenshot_b64 = await self.browser.take_screenshot()
+                
+                if not screenshot_b64:
+                    logger.error("Failed to take screenshot")
+                    continue
+                
+                # Build history text
+                history_text = ""
+                for h in self._history[-5:]:  # Last 5 actions
+                    history_text += f"Step {h['step']}: {h['thought']} -> {h['action_type']}\n"
+                
+                # Call NVIDIA NIM
+                response_text = self._call_nvidia_nim(screenshot_b64, task, history_text)
+                logger.info(f"AI Response: {response_text[:200]}...")
                 
                 # Parse action
                 parsed = self._parse_action(response_text)
-                logger.info(f"UI-TARS Parsed: {parsed}")
+                action_type = parsed.get("action_type", "unknown")
+                thought = parsed.get("thought", "")
                 
-                # Add to history
+                # Callback
+                if callback:
+                    callback(step, thought, action_type)
+                
+                # Store in history
                 self._history.append({
                     "step": step,
-                    "response": response_text,
-                    "parsed": parsed,
+                    "thought": thought,
+                    "action_type": action_type,
+                    "action_inputs": parsed.get("action_inputs", {}),
                 })
-                history_text += f"Step {step}: {response_text}\n"
                 
-                # Detect loops
-                current_action = f"{parsed.get('action_type')}_{json.dumps(parsed.get('action_inputs', {}))}"
-                if current_action == last_action:
-                    same_action_count += 1
-                    if same_action_count >= 3:
-                        logger.warning(f"Detected loop! Breaking out...")
-                        return {
-                            "status": "loop_detected",
-                            "steps": step,
-                            "history": self._history.copy(),
-                        }
-                else:
-                    same_action_count = 0
-                last_action = current_action
-                
-                # Execute action
-                success = await self._execute_action(parsed)
-                if not success:
-                    logger.warning(f"UI-TARS: Action execution failed at step {step}")
-                    consecutive_errors += 1
-                    if consecutive_errors >= 5:
-                        return {
-                            "status": "failed",
-                            "error": "Too many consecutive action failures",
-                            "steps": step,
-                        }
-                else:
-                    consecutive_errors = 0  # Reset on success
-                
-                # Check if task is complete
-                if parsed.get("action_type") == "finished":
+                # Check if finished
+                if action_type == "finished":
+                    elapsed = time.time() - start_time
                     return {
                         "status": "success",
                         "steps": step,
-                        "history": self._history.copy(),
+                        "elapsed_seconds": round(elapsed, 1),
+                        "history": self._history,
                     }
                 
-                # Wait for page to update
-                await self.browser.wait(2)
+                # Execute action
+                success = await self._execute_action(parsed)
+                
+                if not success:
+                    logger.warning(f"Action failed: {action_type}")
+                
+                # Wait between actions
+                import asyncio
+                await asyncio.sleep(1.5)
                 
             except Exception as e:
-                logger.error(f"UI-TARS Step {step} failed: {e}")
-                import traceback
-                traceback.print_exc()
-                consecutive_errors += 1
-                if consecutive_errors >= 3:
-                    return {"status": "failed", "error": str(e), "steps": step}
-                await self.browser.wait(2)
+                logger.error(f"Step {step} error: {e}")
+                # Continue to next step
         
+        elapsed = time.time() - start_time
         return {
             "status": "timeout",
-            "error": f"Max steps ({self.max_steps}) reached",
             "steps": self.max_steps,
-            "history": self._history.copy(),
+            "elapsed_seconds": round(elapsed, 1),
+            "history": self._history,
         }
+
+
+# ─── Convenience Function ─────────────────────────────────────────────────────
+
+async def run_task(
+    browser_controller,
+    task: str,
+    nvidia_api_key: str = None,
+    model: str = None,
+    max_steps: int = 30,
+    callback=None,
+) -> Dict[str, Any]:
+    """
+    Run a task with the UI-TARS agent.
+    
+    Example:
+        result = await run_task(
+            browser,
+            "Go to naukri.com, search for Java Developer jobs in Hyderabad, and extract the first 10 job listings"
+        )
+    """
+    agent = UITarsAgent(
+        browser_controller=browser_controller,
+        nvidia_api_key=nvidia_api_key,
+        model=model,
+        max_steps=max_steps,
+    )
+    return await agent.run(task, callback=callback)
+
+
+# ─── Predefined Tasks ─────────────────────────────────────────────────────────
+
+PREDEFINED_TASKS = {
+    "scrape_naukri": "Go to naukri.com, search for {keywords} jobs in {location}, and extract all job listings with title, company, salary, and apply link",
+    
+    "scrape_linkedin": "Go to linkedin.com/jobs, search for {keywords} in {location}, and extract job listings",
+    
+    "scrape_indeed": "Go to indeed.com, search for {keywords} jobs in {location}, and extract job listings",
+    
+    "apply_job": "Go to {job_url}, click Apply Now, fill the application form with my details, and submit",
+    
+    "fill_form": "Fill the form on this page with: name={name}, email={email}, phone={phone}, resume={resume_path}",
+    
+    "extract_jobs": "Extract all job listings visible on this page with title, company, location, salary, and apply link",
+    
+    "click_apply": "Find and click the Apply Now or Easy Apply button on this page",
+    
+    "navigate_and_search": "Go to {url}, find the search box, type '{query}', and click search",
+}

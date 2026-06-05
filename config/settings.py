@@ -32,6 +32,7 @@ class Settings(BaseSettings):
 
     DEFAULT_CITY: str = "Hyderabad"
     DEFAULT_SKILLS: str = "Python,SQL,Data Analysis"
+    BROWSER_PROXY: str = ""  # Residential proxy for Cloudflare-blocked sites
 
     class Config:
         env_file = ".env"

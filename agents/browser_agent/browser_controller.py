@@ -17,8 +17,6 @@ logger = logging.getLogger(__name__)
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-logger = logging.getLogger(__name__)
-
 try:
     import pyautogui
     PYAUTOGUI_AVAILABLE = True
@@ -38,8 +36,9 @@ def _get_models():
 class BrowserController:
     """Controls browser for AI agent interaction using CloakBrowser stealth."""
 
-    def __init__(self, headless: bool = False):
+    def __init__(self, headless: bool = False, proxy: str = None):
         self.headless = headless
+        self.proxy = proxy or os.environ.get("BROWSER_PROXY", None)
         self.browser: Browser = None
         self.context: BrowserContext = None
         self.page: Page = None
@@ -51,18 +50,23 @@ class BrowserController:
         """Launch browser with stealth. Uses CloakBrowser if available, falls back to raw Playwright."""
         try:
             from cloakbrowser import launch_async
-            logger.info("Launching CloakBrowser (headless=%s)...", self.headless)
-            print(f"[BROWSER] Launching CloakBrowser (headless={self.headless})...", flush=True)
+            logger.info("Launching CloakBrowser (headless=%s, proxy=%s)...", self.headless, bool(self.proxy))
+            # Build CloakBrowser launch kwargs — residential proxy is key for Cloudflare/IP-blocked sites
+            cb_kwargs = {
+                "headless": self.headless,
+                "humanize": True,       # human-like mouse, keyboard, scroll
+                "geoip": bool(self.proxy),  # auto-match timezone/locale to proxy exit IP
+            }
+            if self.proxy:
+                cb_kwargs["proxy"] = self.proxy
             # Timeout CloakBrowser launch at 20s — update checks can hang
             self.browser = await asyncio.wait_for(
-                launch_async(headless=self.headless, humanize=True),
+                launch_async(**cb_kwargs),
                 timeout=20,
             )
-            logger.info("CloakBrowser launched OK")
-            logger.info("CloakBrowser launched OK")
+            logger.info("CloakBrowser launched OK (proxy=%s)", bool(self.proxy))
         except Exception as e:
             logger.warning("CloakBrowser failed (%s), falling back to raw Playwright", e)
-            print(f"[BROWSER] CloakBrowser failed ({e}), falling back to raw Playwright", flush=True)
             pw = await async_playwright().start()
             # Get stealth args if available
             try:
@@ -73,54 +77,31 @@ class BrowserController:
                     "--disable-blink-features=AutomationControlled",
                     "--disable-features=IsolateOrigins,site-per-process",
                 ]
-            self.browser = await pw.chromium.launch(
-                headless=self.headless,
-                args=extra_args,
-            )
-            logger.info("Raw Playwright launched OK")
+            launch_kwargs = {"headless": self.headless, "args": extra_args}
+            if self.proxy:
+                launch_kwargs["proxy"] = self.proxy
+            self.browser = await pw.chromium.launch(**launch_kwargs)
+            logger.info("Raw Playwright launched OK (proxy=%s)", bool(self.proxy))
 
-        # Randomize viewport, user-agent, and locale per session
+        # Create browser context with randomized viewport and locale
         import random
         width = random.randint(1200, 1600)
         height = random.randint(800, 1000)
-        user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:126.0) Gecko/20100101 Firefox/126.0",
-        ]
         locales = ["en-US", "en-GB", "en-IN"]
         accept_languages = ["en-US,en;q=0.9", "en-GB,en;q=0.9", "en-IN,en;q=0.9,en-IN;q=0.8"]
 
-        selected_ua = random.choice(user_agents)
+        # CloakBrowser already patches navigator.webdriver, plugins, languages, platform,
+        # and chrome.runtime at the C++ source level — no need for JS injection.
+        # Only set viewport, locale, and accept-language here.
         self.context = await self.browser.new_context(
             viewport={"width": width, "height": height},
-            user_agent=selected_ua,
             locale=random.choice(locales),
             timezone_id="Asia/Kolkata",
             extra_http_headers={"Accept-Language": random.choice(accept_languages)},
         )
         self.page = await self.context.new_page()
 
-        # Inject anti-detection scripts before every page load
-        await self.page.add_init_script("""
-            // Remove webdriver flag
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            // Override plugins to look like a real browser
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-            // Override languages
-            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-            // Override platform
-            Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
-            // Chrome runtime mock
-            window.chrome = { runtime: {} };
-        """)
-
-        logger.info("Browser context created with UA: %s", selected_ua[:80])
+        logger.info("Browser context created (viewport=%dx%d)", width, height)
 
         # Network response interception — capture API responses for job data
         self._network_responses = []
@@ -268,12 +249,28 @@ class BrowserController:
 
     async def go_to(self, url: str, timeout: int = 30000) -> str:
         """Navigate to URL with retry logic."""
+        # Live monitor: update status before navigation
+        try:
+            from agents.browser_agent.live_monitor import live_monitor
+            live_monitor.update_status(url=url, action=f"Navigating to {url[:50]}...")
+        except Exception:
+            pass
+
         for attempt in range(2):
             try:
                 if not self.page:
                     return "Navigation failed: Page is None"
                 await self.page.goto(url, timeout=timeout, wait_until="domcontentloaded")
                 await self.page.wait_for_timeout(1000)
+
+                # Live monitor: capture screenshot after navigation
+                try:
+                    from agents.browser_agent.live_monitor import live_monitor
+                    live_monitor.update_status(url=url, action=f"Loaded: {url[:50]}...")
+                    live_monitor.set_screenshot(self.page)
+                except Exception:
+                    pass
+
                 return f"Navigated to {url}"
             except Exception as e:
                 error_msg = str(e)
@@ -1577,6 +1574,11 @@ class BrowserController:
         """Check if browser process has crashed or become unresponsive."""
         try:
             if not self.browser or not self.page:
+                return True
+            # Try a lightweight check — if the connection is dead, this will fail
+            if hasattr(self.page, 'is_closed') and self.page.is_closed():
+                return True
+            if hasattr(self.context, 'pages') and not self.context.pages:
                 return True
             return False
         except Exception:

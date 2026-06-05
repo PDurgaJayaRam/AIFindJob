@@ -197,10 +197,13 @@ class JobSaver:
 
         return {"new": new_count, "duplicates": dup_count, "skipped": skipped_count, "total_saved": new_count}
 
-    async def get_all_jobs(self, limit: int = 100, offset: int = 0, status: str = None, days: int = None) -> List[Dict]:
-        """Get all saved jobs. If days is set, only return jobs posted within that many days."""
+    async def get_all_jobs(self, limit: int = 100, offset: int = 0, status: str = None, days: int = None, sort_by: str = "newest") -> List[Dict]:
+        """Get all saved jobs. Sort by 'newest' (created_at desc) or 'score' (ats_score desc)."""
         async with async_session() as session:
-            query = select(Job).order_by(Job.ats_score.desc())
+            if sort_by == "newest":
+                query = select(Job).order_by(Job.created_at.desc())
+            else:
+                query = select(Job).order_by(Job.ats_score.desc())
             if status:
                 query = query.where(Job.status == status)
             if days is not None:

@@ -650,8 +650,27 @@ Return ONLY the JSON array, no explanation:
         # ─── Determine portals to search ────────────────────────────────
         # Glassdoor disabled — Cloudflare IP-blocks automated access
         all_portals = ["naukri", "indeed", "linkedin", "timesjobs", "shine", "foundit", "cutshort"]
+        disabled_portals = ["glassdoor", "glassdoor_us"]
+
         if selected_portals:
+            # Check if any selected portals are disabled
+            selected_disabled = [p for p in selected_portals if p in disabled_portals]
             portal_order = [p for p in selected_portals if p in all_portals]
+
+            if selected_disabled and not portal_order:
+                # All selected portals are disabled — return error
+                disabled_names = ", ".join(selected_disabled)
+                self._log("brain_planning", "portals", f"ERROR: Selected portals are disabled: {disabled_names}")
+                return {
+                    "response": f"⚠️ {disabled_names} is currently disabled due to Cloudflare IP blocking. Please select from available portals: Naukri, Indeed, LinkedIn, TimesJobs, Shine, Foundit, CutShort.",
+                    "tool_uses": self._tool_log,
+                    "jobs": [],
+                }
+            elif selected_disabled:
+                # Some disabled, some valid — warn but continue with valid ones
+                disabled_names = ", ".join(selected_disabled)
+                self._log("brain_planning", "portals", f"WARNING: {disabled_names} disabled, continuing with: {', '.join(portal_order)}")
+
             if not portal_order:
                 portal_order = all_portals
         else:
@@ -661,9 +680,11 @@ Return ONLY the JSON array, no explanation:
 
         # ─── Use Autonomous Agent for search ─────────────────────────────
         from agents.browser_agent.autonomous_agent import AutonomousAgent
+        import os
 
         self._log("browser_init", "starting", "Starting autonomous agent...")
-        agent = AutonomousAgent(headless=False)
+        proxy = os.environ.get("BROWSER_PROXY", None)
+        agent = AutonomousAgent(headless=False, proxy=proxy)
         all_raw_jobs = []
 
         try:

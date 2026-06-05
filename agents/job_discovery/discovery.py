@@ -29,12 +29,26 @@ class JobDiscoveryAgent:
         query = " ".join(keywords)
         location = " ".join(locations)
 
+        # Live monitor: notify that scraping is starting
+        try:
+            from agents.browser_agent.live_monitor import live_monitor
+            live_monitor.update_status(
+                portal="Multi-Portal",
+                action=f"Starting search: '{query}' in '{location}'"
+            )
+        except Exception:
+            pass
+
         try:
             script_path = os.path.join(self.project_root, "agents", "browser_agent", "standalone.py")
+            # Mark subprocess so live_monitor writes to IPC file
+            env = os.environ.copy()
+            env["LIVE_SCRAPER_SUBPROCESS"] = "1"
             result = subprocess.run(
                 [sys.executable, script_path, query, location, str(max_results), str(self.headless).lower()],
-                capture_output=True, text=True, timeout=120,
-                cwd=self.project_root
+                capture_output=True, text=True, timeout=600,
+                cwd=self.project_root,
+                env=env
             )
 
             # Print agent logs for debugging

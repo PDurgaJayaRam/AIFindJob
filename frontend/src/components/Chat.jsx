@@ -7,11 +7,12 @@ const PORTALS = [
   { value: 'indeed', label: 'Indeed' },
   { value: 'linkedin', label: 'LinkedIn' },
   { value: 'foundit', label: 'Foundit' },
-  { value: 'glassdoor', label: 'Glassdoor' },
+  { value: 'glassdoor', label: 'Glassdoor', disabled: true, reason: 'Disabled — Cloudflare IP blocking' },
   { value: 'timesjobs', label: 'TimesJobs' },
   { value: 'shine', label: 'Shine' },
+  { value: 'cutshort', label: 'CutShort' },
   { value: 'linkedin_us', label: 'LinkedIn US' },
-  { value: 'glassdoor_us', label: 'Glassdoor US' },
+  { value: 'glassdoor_us', label: 'Glassdoor US', disabled: true, reason: 'Disabled — Cloudflare IP blocking' },
 ]
 
 function JobsTable({ jobs }) {
@@ -131,6 +132,10 @@ export default function Chat() {
   }
 
   const togglePortal = (portal) => {
+    // Don't allow selecting disabled portals
+    const portalDef = PORTALS.find(p => p.value === portal)
+    if (portalDef?.disabled) return
+
     setSettings(prev => ({
       ...prev,
       portals: prev.portals.includes(portal)
@@ -227,17 +232,30 @@ export default function Chat() {
         </select>
 
         <div className="divider"></div>
-
         <label style={{ marginBottom: 8 }}>Portals</label>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {PORTALS.map(p => (
-            <label key={p.value} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#ccc', cursor: 'pointer' }}>
+            <label
+              key={p.value}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 12,
+                color: p.disabled ? '#666' : '#ccc',
+                cursor: p.disabled ? 'not-allowed' : 'pointer',
+                opacity: p.disabled ? 0.5 : 1,
+              }}
+              title={p.disabled ? p.reason : ''}
+            >
               <input
                 type="checkbox"
                 checked={settings.portals.includes(p.value)}
                 onChange={() => togglePortal(p.value)}
+                disabled={p.disabled}
               />
               {p.label}
+              {p.disabled && <span style={{ fontSize: 10, color: '#ff6b6b' }}>(unavailable)</span>}
             </label>
           ))}
         </div>

@@ -108,9 +108,9 @@ def _parse_posted_date(text: str) -> Optional[datetime]:
 class AutonomousAgent:
     """Efficient job search agent - Mistral for UI, DOM for data."""
 
-    def __init__(self, headless: bool = False):
+    def __init__(self, headless: bool = False, proxy: str = None):
         self.ai = get_ai_client()
-        self.browser = BrowserController(headless=headless)
+        self.browser = BrowserController(headless=headless, proxy=proxy)
         self._log_entries = []
         self._brain_context = {}
 
@@ -280,16 +280,30 @@ Respond with ONLY a JSON object:
                 }
 
                 // Get description — try specific selectors first, then fallback to body
-                for (const sel of [
+                // Portal-specific selectors + generic ones
+                const descSelectors = [
+                    // Naukri
                     '[class*="job-description"]', '[class*="jobDescription"]',
-                    '[class*="jd-desc"]', '[class*="description"]',
-                    '[data-testid="job-description"]',
-                    '[class*="jobDescription"]', '[class*="detail"]',
+                    '[class*="jd-desc"]', '[class*="jdHeader"] + div',
+                    '[class*="naukri-description"]', '[id*="jobDescription"]',
+                    // LinkedIn
+                    '[class*="description__text"]', '[class*="show-more-less-html"]',
+                    '[class*="jobs-description"]', '.jobs-box__html-content',
+                    // Indeed
+                    '[class*="jobsearch-jobDescriptionText"]', '#jobDescriptionText',
+                    '[class*="job-description"]',
+                    // Foundit/monster
                     '[class*="job-detail"]', '[class*="jobDetail"]',
                     '[class*="jd-section"]', '[class*="job-desc"]',
-                    '[class*="detail-description"]',
-                    'article', '[class*="content"]', 'main'
-                ]) {
+                    // CutShort
+                    '[class*="JobDescription"]', '[class*="job_about"]',
+                    //通用
+                    '[data-testid="job-description"]',
+                    '[class*="detail-description"]', '[class*="description"]',
+                    '[class*="detail"]', '[class*="content"]',
+                    'article', 'main', '[role="main"]'
+                ];
+                for (const sel of descSelectors) {
                     const el = document.querySelector(sel);
                     if (el) {
                         const text = el.innerText.trim();
@@ -297,20 +311,44 @@ Respond with ONLY a JSON object:
                     }
                 }
 
-                // Fallback: grab all text from body if no description found
+                // If no description from selectors, try getting ALL text blocks and pick the longest one
+                if (!data.description || data.description.length < 80) {
+                    // Strategy 1: Find largest text block on page (usually the description)
+                    const allDivs = document.querySelectorAll('div, section, p');
+                    let bestText = '';
+                    for (const div of allDivs) {
+                        // Skip tiny or navigation elements
+                        if (div.children.length > 20) continue;
+                        const text = div.innerText.trim();
+                        if (text.length > bestText.length && text.length > 150) {
+                            // Skip if it looks like a nav/header/footer
+                            const lower = text.toLowerCase();
+                            if (!lower.startsWith('menu') && !lower.startsWith('sign in') &&
+                                !lower.startsWith('home') && text.length < 5000) {
+                                bestText = text;
+                            }
+                        }
+                    }
+                    if (bestText.length > 150) {
+                        data.description = bestText.substring(0, 3000);
+                    }
+                }
+
+                // Strategy 2: Look for job description section markers in body text
                 if (!data.description || data.description.length < 80) {
                     const body = document.body.innerText || '';
-                    // Look for job description section markers
                     const markers = ['job description', 'about the role', 'about the job',
                         'what you will do', 'responsibilities', 'requirements', 'qualifications',
                         'what we are looking for', 'role description', 'key responsibilities',
                         'about the company', 'key skills', 'skills required', 'job summary',
-                        'what you\\'ll do', 'your role', 'role overview'];
+                        'what you\'ll do', 'your role', 'role overview', 'job details',
+                        'job summary', 'position summary', 'overview'];
                     const lowerBody = body.toLowerCase();
                     for (const marker of markers) {
                         const idx = lowerBody.indexOf(marker);
                         if (idx !== -1) {
-                            const snippet = body.substring(idx, idx + 2500).trim();
+                            // Start from the marker, grab up to 3000 chars
+                            const snippet = body.substring(idx, idx + 3000).trim();
                             if (snippet.length > (data.description || '').length) {
                                 data.description = snippet;
                             }
@@ -318,7 +356,7 @@ Respond with ONLY a JSON object:
                         }
                     }
                     if ((!data.description || data.description.length < 80) && body.length > 200) {
-                        data.description = body.substring(0, 2000).trim();
+                        data.description = body.substring(0, 2500).trim();
                     }
                 }
 
@@ -344,7 +382,7 @@ Respond with ONLY a JSON object:
 
                 // Extract skills from description
                 if (data.description) {
-                    const skillPatterns = /(?:java|python|javascript|react|angular|node[\\s.]?js|sql|html|css|aws|docker|git|spring[\\s.]?boot|django|flask|fastapi|typescript|vue[\\s.]?js|mongodb|postgresql|redis|kubernetes|hibernate|microservices|rest[\\s.]?api|graphql|junit|selenium|jenkins|terraform)/gi;
+                    const skillPatterns = /(?:java|python|javascript|react|angular|node[\\s.]?js|sql|html|css|aws|docker|git|spring[\\s.]?boot|django|flask|fastapi|typescript|vue[\\s.]?js|mongodb|postgresql|redis|kubernetes|hibernate|microservices|rest[\\s.]?api|graphql|junit|selenium|jenkins|terraform|c[\\s+#]|c\\+\\+|ruby|go|golang|rust|scala|kotlin|swift|flutter|react[\\s.]?native|next[\\s.]?js|nuxt|svelte|tailwind|bootstrap|sass|less|webpack|vite|npm|yarn|pnpm|mysql|oracle|sql[\\s.]?server|elasticsearch|kafka|rabbitmq|celery|apache|nginx|linux|agile|scrum|jira|confluence|figma|photoshop|illustrator|power[\\s.]?bi|tableau|excel|machine[\\s.]?learning|deep[\\s.]?learning|tensorflow|pytorch|opencv|nlp|ai|ml|data[\\s.]?science|data[\\s.]?analysis|etl|airflow|spark|hadoop|hive|snowflake|redshift|bigquery|databricks|ci[\\/]?cd|devops|microsoft[\\s.]?azure|gcp|google[\\s.]?cloud)/gi;
                     const matches = data.description.match(skillPatterns);
                     if (matches) data.skills = [...new Set(matches.map(s => s.toLowerCase()))];
                 }
@@ -352,13 +390,13 @@ Respond with ONLY a JSON object:
                 // Extract posting date
                 const datePatterns = [
                     /\\d+\\s*(?:minute|hour|day|week|month)s?\\s*ago/i,
-                    /(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\\s+\\d{1,2}[,]?\\s*\\d{0,4}/i,
-                    /\\d{1,2}\\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[,]?\\s*\\d{0,4}/i,
+                    /(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\\s+\\d{1,2}[,\s]*\\d{0,4}/i,
+                    /\\d{1,2}\\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[,\s]*\\d{0,4}/i,
                     /just\\s+posted|today|yesterday/i
                 ];
-                const body = document.body.innerText || '';
+                const dateBody = document.body.innerText || '';
                 for (const pat of datePatterns) {
-                    const m = body.match(pat);
+                    const m = dateBody.match(pat);
                     if (m) { data.posted_text = m[0]; break; }
                 }
 
@@ -523,6 +561,7 @@ Respond with ONLY a JSON object:
         seen_urls = set()
         self._search_cache = {}  # {(portal, keyword, location): {"jobs": [...], "timestamp": float}}
         self._glassdoor_blocked = False  # Track if Glassdoor triggered CAPTCHA
+        self._is_fresher = is_fresher  # Used by _build_search_url for portal-specific filters
         portals_to_search = portals or ["naukri", "indeed", "linkedin"]
         glassdoor_blocked = False  # Once CAPTCHA hits, skip for all remaining keywords
 
@@ -584,15 +623,20 @@ Respond with ONLY a JSON object:
                         err_msg = str(e)
                         self._log(f"Portal {portal} [{kw}]: failed with {type(e).__name__}: {err_msg[:100]}")
                         # Browser crash recovery — relaunch if context/page died
-                        if "TargetClosedError" in type(e).__name__ or "closed" in err_msg.lower():
+                        is_closed_err = (
+                            "TargetClosedError" in type(e).__name__ or
+                            "closed" in err_msg.lower() or
+                            "connection" in err_msg.lower()
+                        )
+                        if is_closed_err:
                             self._log("Browser crashed — attempting recovery...")
                             try:
                                 await self.browser.close()
                             except:
                                 pass
                             try:
-                                self.browser = BrowserController(headless=False)
-                                await self.browser.launch()
+                                self.browser = BrowserController(headless=False, proxy=self.browser.proxy)
+                                await self.browser.start()
                                 self._log("Browser recovered successfully")
                             except Exception as recover_err:
                                 self._log(f"Browser recovery failed: {recover_err}")
@@ -602,6 +646,25 @@ Respond with ONLY a JSON object:
                     # Anti-detection delay between portals (random 3-7s)
                     delay = random.uniform(3, 7)
                     await asyncio.sleep(delay)
+
+                    # Check browser health after each portal — recover if dead
+                    try:
+                        if self.browser.is_browser_crashed():
+                            self._log("Browser died after portal search — attempting recovery...")
+                            try:
+                                await self.browser.close()
+                            except:
+                                pass
+                            try:
+                                self.browser = BrowserController(headless=False, proxy=self.browser.proxy)
+                                await self.browser.start()
+                                self._log("Browser recovered successfully")
+                            except Exception as recover_err:
+                                self._log(f"Browser recovery failed: {recover_err}")
+                                browser_dead = True
+                                break
+                    except Exception:
+                        pass
 
                     # Close any extra tabs/popups opened by the portal
                     try:
@@ -674,12 +737,7 @@ Respond with ONLY a JSON object:
                 pass
 
             try:
-                # Stealth: disable webdriver flag before Glassdoor navigation
-                if portal == "glassdoor":
-                    try:
-                        await self.browser.page.evaluate("() => { Object.defineProperty(navigator, 'webdriver', {get: () => false}); }")
-                    except:
-                        pass
+                # CloakBrowser already patches navigator.webdriver at C++ level — no JS override needed
                 await self.browser.go_to(search_url, timeout=30000)
                 await self.browser.wait(2)
             except Exception as e:
@@ -789,12 +847,14 @@ Respond with ONLY a JSON object:
                         loc_d = loc_q.replace("+", "-")
                         ko_s = len(loc_d) + 1
                         ko_e = ko_s + len(title_d)
+                        _exp_naukri = "?experience=0" if getattr(self, "_is_fresher", False) else ""
+                        _exp_indeed = "&explvl=entry_level" if getattr(self, "_is_fresher", False) else ""
                         portal_search_urls = {
-                            "naukri": f"https://www.naukri.com/{title_d}-jobs-in-{loc_d}",
-                            "indeed": f"https://in.indeed.com/jobs?q={title_q}&l={loc_q}",
+                            "naukri": f"https://www.naukri.com/{title_d}-jobs-in-{loc_d}{_exp_naukri}",
+                            "indeed": f"https://in.indeed.com/jobs?q={title_q}&l={loc_q}{_exp_indeed}",
                             "linkedin": f"https://www.linkedin.com/jobs/search/?keywords={title_q}&location={loc_q}",
-                            "shine": f"https://www.shine.com/job-search/{title_d}-jobs-in-{loc_d}",
-                            "foundit": f"https://www.foundit.in/srp/results?query={title_q}+{loc_q}",
+                            "shine": f"https://www.shine.com/job-search/{title_d}-jobs-in-{loc_d}" + ("?experienced=0" if getattr(self, "_is_fresher", False) else ""),
+                            "foundit": f"https://www.foundit.in/srp/results?query={title_q}+{loc_q}" + ("&experience=0" if getattr(self, "_is_fresher", False) else ""),
                             "glassdoor": f"https://www.glassdoor.co.in/Job/{title_d}-{loc_d}-jobs-SRCH_IL.0,{len(loc_d)}_KO{ko_s},{ko_e}.htm",
                             "timesjobs": f"https://www.timesjobs.com/candidate/job-search.html?searchType=personalizedSearch&from=brain&txtKeywords={title_q}&txtLocation={loc_q}",
                         }
@@ -815,7 +875,7 @@ Respond with ONLY a JSON object:
                         if "cloudflare" in desc_lower or "ray id:" in desc_lower:
                             job["description"] = ""
                             has_desc = False
-                    if not has_desc and job_url and api_detail_visits < 15:
+                    if not has_desc and job_url and api_detail_visits < 25:
                         await asyncio.sleep(random.uniform(1.5, 3.5))
                         api_detail_visits += 1
                         detailed = await self._open_job_and_extract(job_url)
@@ -1250,21 +1310,37 @@ Respond with ONLY a JSON object:
         loc_dash = loc_raw.replace(" ", "-")
 
         if portal == "naukri":
-            return f"https://www.naukri.com/{kw_dash}-jobs-in-{loc_dash}"
+            base = f"https://www.naukri.com/{kw_dash}-jobs-in-{loc_dash}"
+            if getattr(self, "_is_fresher", False):
+                base += "?experience=0"
+            return base
         elif portal == "indeed":
-            return f"https://in.indeed.com/jobs?q={kw}&l={loc}"
+            base = f"https://in.indeed.com/jobs?q={kw}&l={loc}"
+            if getattr(self, "_is_fresher", False):
+                base += "&explvl=entry_level"
+            return base
         elif portal == "linkedin":
             return f"https://www.linkedin.com/jobs/search/?keywords={kw}&location={loc}"
         elif portal == "glassdoor":
             # Format: {keyword}-{location}-jobs-SRCH_IL.0,{loc_len}_KO{kw_start},{kw_end}.htm
             ko_s = len(loc_dash) + 1
             ko_e = ko_s + len(kw_dash)
-            return f"https://www.glassdoor.co.in/Job/{kw_dash}-{loc_dash}-jobs-SRCH_IL.0,{len(loc_dash)}_KO{ko_s},{ko_e}.htm"
+            base = f"https://www.glassdoor.co.in/Job/{kw_dash}-{loc_dash}-jobs-SRCH_IL.0,{len(loc_dash)}_KO{ko_s},{ko_e}.htm"
+            if getattr(self, "_is_fresher", False):
+                base += "?minExperience=0&maxExperience=1"
+            return base
         elif portal == "timesjobs":
             return f"https://www.timesjobs.com/candidate/job-search.html?from=submit&actualTxtKeywords={kw_dash}&searchBy=1&fjType=1&jobType=1&locationType=1&location={loc_dash}"
         elif portal == "shine":
-            return f"https://www.shine.com/job-search/{kw_dash}-jobs-in-{loc_dash}"
+            # Add experience filter: experienced=0 for freshers
+            base = f"https://www.shine.com/job-search/{kw_dash}-jobs-in-{loc_dash}"
+            if getattr(self, "_is_fresher", False):
+                base += "?experienced=0"
+            return base
         elif portal == "foundit":
-            return f"https://www.foundit.in/srp/results?query={kw}+{loc}"
+            base = f"https://www.foundit.in/srp/results?query={kw}+{loc}"
+            if getattr(self, "_is_fresher", False):
+                base += "&experience=0"
+            return base
 
         return f"https://www.naukri.com/{kw_dash}-jobs-in-{loc_dash}"

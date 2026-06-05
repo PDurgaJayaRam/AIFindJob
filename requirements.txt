@@ -14,6 +14,9 @@ asyncpg==0.29.0
 aiosqlite==0.19.0
 redis==5.0.1
 
+# Background scheduling
+apscheduler==3.10.4
+
 # Async & HTTP
 httpx==0.26.0
 aiohttp==3.9.3
@@ -22,6 +25,7 @@ asyncio==3.4.3
 
 # Browser Automation
 playwright==1.41.0
+cloakbrowser
 
 # Scraping & Parsing
 beautifulsoup4==4.12.3

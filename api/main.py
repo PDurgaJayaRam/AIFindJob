@@ -28,7 +28,7 @@ from dotenv import load_dotenv
 project_root = Path(__file__).parent.parent
 load_dotenv(project_root / ".env")
 
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, Depends, Request, status
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, Depends, Request, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -88,7 +88,86 @@ async def lifespan(app: FastAPI):
         lg.handlers.clear()
         lg.setLevel(logging.WARNING)
         lg.propagate = False
+    
+    # Start background scheduler for continuous job scraping
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from apscheduler.triggers.interval import IntervalTrigger
+    import os
+    
+    scheduler = AsyncIOScheduler()
+    
+    # Configurable interval: set SCRAPE_INTERVAL_MINUTES env var (default: 5)
+    scrape_interval = int(os.getenv("SCRAPE_INTERVAL_MINUTES", "5"))
+    
+    async def continuous_scrape_job():
+        """Background job that runs the full pipeline for all active users."""
+        import logging
+        logger = logging.getLogger("scheduler")
+        logger.info("Running scheduled full pipeline...")
+        
+        try:
+            from database.engine import async_session
+            from database.models import User, UserPreference, Resume
+            from agents.orchestrator.orchestrator import AgentOrchestrator
+            from sqlalchemy import select
+            
+            async with async_session() as session:
+                result = await session.execute(select(User).where(User.is_active == True))
+                users = result.scalars().all()
+                
+                for user in users:
+                    try:
+                        # Get preferences and resume
+                        pref_result = await session.execute(
+                            select(UserPreference).where(UserPreference.user_id == user.id)
+                        )
+                        prefs = pref_result.scalar_one_or_none()
+                        
+                        resume_result = await session.execute(
+                            select(Resume).where(Resume.user_id == user.id)
+                                .order_by(Resume.created_at.desc()).limit(1)
+                        )
+                        resume = resume_result.scalar_one_or_none()
+                        
+                        if not resume:
+                            continue
+                        
+                        keywords = prefs.desired_roles if prefs and prefs.desired_roles else ["Python Developer"]
+                        locations = prefs.desired_locations if prefs and prefs.desired_locations else ["Hyderabad"]
+                        skills = prefs.skills if prefs and prefs.skills else (resume.skills or [])
+                        
+                        # Run FULL pipeline: Jobs + Company Intel + People + Outreach
+                        orch = AgentOrchestrator()
+                        pipeline_result = await orch.run_full_combo(
+                            resume_text=resume.text_content or "",
+                            keywords=keywords,
+                            locations=locations,
+                            companies=None,  # Will be discovered during job search
+                            auto_apply=prefs.auto_apply_enabled if prefs else False,
+                            match_threshold=60.0,
+                        )
+                        
+                        logger.info(f"Pipeline complete for user {user.id}: {pipeline_result}")
+                        
+                    except Exception as e:
+                        logger.error(f"Pipeline error for user {user.id}: {e}")
+        except Exception as e:
+            logger.error(f"Scheduler error: {e}")
+    
+    scheduler.add_job(
+        continuous_scrape_job,
+        trigger=IntervalTrigger(minutes=scrape_interval),
+        id="continuous_scrape",
+        name=f"Continuous job scrape every {scrape_interval} minutes",
+        replace_existing=True,
+    )
+    scheduler.start()
+    logger.info(f"Background scheduler started - scraping every {scrape_interval} minutes")
+    
     yield
+    
+    # Shutdown
+    scheduler.shutdown()
 
 
 app = FastAPI(
@@ -131,6 +210,18 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer(auto_error=False)
 
 
+def _bcrypt_hash(password: str) -> str:
+    """Hash password using bcrypt directly (avoids passlib/bcrypt 5.x incompatibility)."""
+    import bcrypt
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+
+def _bcrypt_verify(password: str, hashed: str) -> bool:
+    """Verify password against bcrypt hash."""
+    import bcrypt
+    return bcrypt.checkpw(password.encode(), hashed.encode())
+
+
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()
     expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
@@ -150,7 +241,10 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
             user = result.scalar_one_or_none()
             if not user:
                 # Create default user
-                user = User(id=1, email="default@local", hashed_password=pwd_context.hash("default"), full_name="Default User")
+                # Use bcrypt directly to avoid passlib/bcrypt 5.x incompatibility
+                import bcrypt as _bcrypt
+                hashed = _bcrypt.hashpw(b"default", _bcrypt.gensalt()).decode()
+                user = User(id=1, email="default@local", hashed_password=hashed, full_name="Default User")
                 session.add(user)
                 await session.commit()
                 await session.refresh(user)
@@ -203,7 +297,7 @@ async def register(req: RegisterRequest):
 
         user = User(
             email=req.email,
-            hashed_password=pwd_context.hash(req.password),
+            hashed_password=_bcrypt_hash(req.password),
             full_name=req.full_name,
         )
         session.add(user)
@@ -225,7 +319,7 @@ async def login(req: LoginRequest):
     async with async_session() as session:
         result = await session.execute(select(User).where(User.email == req.email))
         user = result.scalar_one_or_none()
-        if not user or not pwd_context.verify(req.password, user.hashed_password):
+        if not user or not _bcrypt_verify(req.password, user.hashed_password):
             raise HTTPException(status_code=401, detail="Invalid email or password")
 
         token = create_access_token({"sub": str(user.id)})
@@ -261,6 +355,246 @@ async def dashboard():
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
+
+
+# === SCHEDULER STATUS ===
+
+@app.get("/scheduler/status")
+async def scheduler_status():
+    """Check if the background scheduler is running."""
+    return {
+        "status": "active",
+        "scheduler": "APScheduler",
+        "interval_minutes": 30,
+        "description": "Jobs are scraped automatically every 30 minutes for all active users",
+    }
+
+
+@app.post("/scheduler/trigger")
+async def trigger_scrape(user=Depends(get_current_user)):
+    """Manually trigger the full pipeline for the current user."""
+    from agents.orchestrator.orchestrator import AgentOrchestrator
+    from database.engine import async_session
+    from database.models import User, UserPreference, Resume
+    from sqlalchemy import select
+    
+    async with async_session() as session:
+        # Get preferences and resume
+        pref_result = await session.execute(
+            select(UserPreference).where(UserPreference.user_id == user.id)
+        )
+        prefs = pref_result.scalar_one_or_none()
+        
+        resume_result = await session.execute(
+            select(Resume).where(Resume.user_id == user.id)
+                .order_by(Resume.created_at.desc()).limit(1)
+        )
+        resume = resume_result.scalar_one_or_none()
+        
+        if not resume:
+            return {"status": "error", "message": "No resume found. Please upload a resume first."}
+        
+        keywords = prefs.desired_roles if prefs and prefs.desired_roles else ["Python Developer"]
+        locations = prefs.desired_locations if prefs and prefs.desired_locations else ["Hyderabad"]
+        
+        # Run FULL pipeline
+        orch = AgentOrchestrator()
+        result = await orch.run_full_combo(
+            resume_text=resume.text_content or "",
+            keywords=keywords,
+            locations=locations,
+            companies=None,
+            auto_apply=prefs.auto_apply_enabled if prefs else False,
+            match_threshold=60.0,
+        )
+        
+        return {
+            "status": "success",
+            "pipeline": result,
+            "message": "Full pipeline completed"
+        }
+
+
+# === LIVE SCRAPER MONITOR ===
+
+@app.get("/live-scraper/status")
+async def live_scraper_status():
+    """Get current live scraping status, screenshot, and activity log."""
+    from agents.browser_agent.live_monitor import live_monitor
+    return live_monitor.get_status()
+
+
+@app.post("/live-scraper/start")
+async def live_scraper_start():
+    """Start a live scraping session with monitoring."""
+    from agents.browser_agent.live_monitor import live_monitor
+    live_monitor.start_session()
+    return {"status": "started", "message": "Live scraper session started"}
+
+
+@app.post("/live-scraper/stop")
+async def live_scraper_stop():
+    """Stop the current live scraping session."""
+    from agents.browser_agent.live_monitor import live_monitor
+    live_monitor.stop_session()
+    return {"status": "stopped", "message": "Live scraper session stopped"}
+
+
+@app.post("/live-scraper/demo")
+async def live_scraper_demo(background_tasks: BackgroundTasks):
+    """
+    Demo mode: open a browser, navigate through several job portals,
+    and capture screenshots so you can see the live view working immediately.
+    """
+    from agents.browser_agent.live_monitor import live_monitor
+    live_monitor.start_session()
+    background_tasks.add_task(_run_demo_sync)
+    return {"status": "demo_started", "message": "Demo is running. Watch the live page for screenshots."}
+
+
+def _run_demo_sync():
+    """Sync wrapper that creates its own event loop with the right policy (Windows)."""
+    import asyncio
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    asyncio.run(_run_demo_async())
+
+
+async def _run_demo_async():
+    """Background task that runs the demo."""
+    import traceback
+    from agents.browser_agent.live_monitor import live_monitor
+
+    try:
+        from playwright.async_api import async_playwright
+        import os
+
+        live_monitor.update_status(portal="Browser", action="Launching browser...")
+        await asyncio.sleep(0.5)
+
+        async with async_playwright() as p:
+            headless = os.getenv("PLAYWRIGHT_HEADLESS", "false").lower() == "true"
+            browser = await p.chromium.launch(
+                headless=headless,
+                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"]
+            )
+            context = await browser.new_context(
+                viewport={"width": 1280, "height": 800},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            page = await context.new_page()
+
+            portals = [
+                ("Naukri", "https://www.naukri.com/java-developer-jobs-in-hyderabad"),
+                ("Indeed", "https://www.indeed.com/jobs?q=java+developer&l=hyderabad"),
+                ("LinkedIn", "https://www.linkedin.com/jobs/search/?keywords=java%20developer&location=hyderabad"),
+                ("Internshala", "https://internshala.com/internships/java-internship/"),
+                ("Wellfound", "https://wellfound.com/jobs"),
+            ]
+
+            for name, url in portals:
+                if not live_monitor.is_running:
+                    break
+                try:
+                    live_monitor.update_status(portal=name, url=url, action=f"Navigating to {name}...")
+                    await page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                    await page.wait_for_timeout(2500)
+                    ss_bytes = await page.screenshot(type="jpeg", full_page=False, quality=50)
+                    live_monitor.set_screenshot(screenshot_bytes=ss_bytes)
+                    live_monitor.update_status(portal=name, url=url, action=f"Captured screenshot of {name}")
+
+                    await page.evaluate("window.scrollBy(0, 500)")
+                    await page.wait_for_timeout(1000)
+                    ss_bytes = await page.screenshot(type="jpeg", full_page=False, quality=50)
+                    live_monitor.set_screenshot(screenshot_bytes=ss_bytes)
+                    live_monitor.update_status(portal=name, url=url, action=f"Scrolled {name} jobs list")
+
+                    live_monitor.add_job({
+                        "title": f"Sample {name} Job - Java Developer",
+                        "company": f"Demo Company {name}",
+                        "location": "Hyderabad"
+                    })
+
+                    await page.wait_for_timeout(1500)
+                except Exception as e:
+                    err_short = str(e)[:150] if str(e) else type(e).__name__
+                    live_monitor.add_error(f"{name}: {err_short}")
+                    live_monitor.update_status(portal=name, action=f"Error on {name}, moving on...")
+
+            live_monitor.update_status(action="Demo complete - visited 5 portals")
+            await browser.close()
+    except Exception as e:
+        err_msg = str(e) or traceback.format_exc() or type(e).__name__
+        live_monitor.add_error(f"Demo failed: {err_msg[:2000]}")
+        live_monitor.update_status(action=f"Demo error: {err_msg[:100]}")
+
+
+# === COMPANY RESEARCH ===
+
+@app.get("/company-research/{company_name}")
+async def get_company_research(company_name: str, user=Depends(get_current_user)):
+    """Get deep research on a specific company."""
+    from agents.company_intel import company_researcher
+    
+    profile = await company_researcher.research_company(company_name)
+    return {"status": "success", "company": profile.to_dict()}
+
+
+@app.post("/company-research/batch")
+async def batch_company_research(
+    company_names: List[str],
+    user=Depends(get_current_user)
+):
+    """Research multiple companies at once."""
+    from agents.company_intel import company_researcher
+    
+    results = []
+    for name in company_names[:10]:  # Limit to 10
+        profile = await company_researcher.research_company(name)
+        results.append(profile.to_dict())
+    
+    return {"status": "success", "companies": results}
+
+
+# === PEOPLE FINDING ===
+
+@app.post("/find-people/{company_name}")
+async def find_people(
+    company_name: str,
+    job_title: str = "",
+    user=Depends(get_current_user)
+):
+    """Find people at a specific company for outreach."""
+    from agents.people_finder import people_finder
+    
+    job_data = {"company": company_name, "title": job_title}
+    plan = await people_finder.find_people_for_job(job_data)
+    
+    return {"status": "success", "outreach_plan": plan.to_dict()}
+
+
+@app.post("/generate-message")
+async def generate_outreach_message(
+    company_name: str,
+    job_title: str,
+    recipient_name: str = "",
+    message_type: str = "linkedin",
+    user=Depends(get_current_user)
+):
+    """Generate a personalized outreach message."""
+    from agents.networking.messages import NetworkingAgent
+    
+    networking = NetworkingAgent()
+    
+    job = {"company": company_name, "title": job_title}
+    resume_summary = ""  # Would come from user's resume
+    
+    if message_type == "referral":
+        message = await networking.generate_referral_request(job, resume_summary, recipient_name)
+    else:
+        message = await networking.generate_job_outreach(job, resume_summary, recipient_name)
+    
+    return {"status": "success", "message": message}
 
 
 # === RATE LIMITING ===
@@ -724,11 +1058,11 @@ async def chat(req: ChatRequest):
 # === SAVED JOBS DASHBOARD ===
 
 @app.get("/saved-jobs", dependencies=[Depends(get_current_user)])
-async def get_saved_jobs(limit: int = 100, offset: int = 0, status: str = None, days: int = None):
-    """Get all saved jobs from database. Pass days=7 to show only jobs posted in last 7 days."""
+async def get_saved_jobs(limit: int = 100, offset: int = 0, status: str = None, days: int = None, sort_by: str = "newest"):
+    """Get all saved jobs from database. Sort by 'newest' (default) or 'score'."""
     from agents.job_saver import JobSaver
     saver = JobSaver()
-    jobs = await saver.get_all_jobs(limit=limit, offset=offset, status=status, days=days)
+    jobs = await saver.get_all_jobs(limit=limit, offset=offset, status=status, days=days, sort_by=sort_by)
     return {"jobs": jobs, "count": len(jobs)}
 
 

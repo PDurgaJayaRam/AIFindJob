@@ -1,5 +1,5 @@
 # Project Status - AI Career Agent
-**Last Updated:** 2026-05-28  
+**Last Updated:** 2026-06-02  
 **Total Commits:** 17  
 **Current Jobs in DB:** 783  
 
@@ -16,7 +16,7 @@ An autonomous AI-powered career agent that scrapes jobs from multiple portals, a
 | Layer | Technology |
 |-------|-----------|
 | Backend | Python 3.12, FastAPI, SQLAlchemy (async), SQLite |
-| Browser Automation | Playwright (Chromium) |
+| Browser Automation | Playwright (Chromium) + CloakBrowser (stealth) |
 | AI/LLM | Mistral API (vision), OpenAI-compatible endpoints |
 | Frontend | React 18, Vite, Recharts, Tailwind CSS |
 | Scraping | Playwright + DOM extraction, Vision-guided navigation |
@@ -359,11 +359,10 @@ Project/
 ## Known Issues & Limitations
 
 ### Critical
-- **Glassdoor CAPTCHA**: Anti-bot triggers after ~1 keyword, only 2 jobs scraped
-- **TimesJobs**: Very low yield (5 jobs total)
+- **Glassdoor CAPTCHA**: IP-level Cloudflare block (requires residential proxy). CloakBrowser handles fingerprint detection but can't bypass IP reputation blocking.
 
 ### Moderate
-- **Description coverage**: Only 47% of jobs have full descriptions (368/783)
+- **Description coverage**: Only 47% of jobs have full descriptions (368/783) — improved extraction logic with portal-specific selectors
 - **User auth**: No real authentication implemented (uses hardcoded user_id=1)
 - **Email sending**: Requires SMTP configuration in .env
 
@@ -382,6 +381,8 @@ SMTP_HOST=                 # Email sending (optional)
 SMTP_PORT=587
 SMTP_USER=
 SMTP_PASS=
+BROWSER_PROXY=             # Residential proxy for Glassdoor (optional)
+                            # Format: http://user:pass@proxy:port
 ```
 
 ---
@@ -417,12 +418,21 @@ uvicorn api.main:app --reload --port 8000
 
 ## Next Steps / TODO
 
-1. **Fix Glassdoor**: Implement CAPTCHA solving or alternative approach
-2. **Improve TimesJobs**: Debug extraction logic
-3. **Increase description coverage**: Visit more detail pages
-4. **Add user authentication**: Real user system
-5. **Deploy**: Set up production deployment
-6. **Improve React frontend**: Migrate from chat.html to React components
-7. **Add tests**: Unit and integration tests
-8. **Rate limiting**: Better portal-specific rate limits
-9. **Monitoring**: Add logging and error tracking
+### In Progress
+1. **Fix Glassdoor**: Add residential proxy support (BROWSER_PROXY env var) — code ready, needs proxy config
+2. **Improve description coverage**: Enhanced extraction with portal-specific selectors, increased detail visit limit
+
+### Pending
+3. **Add user authentication**: Real user system
+4. **Deploy**: Set up production deployment
+5. **Improve React frontend**: Migrate from chat.html to React components
+6. **Add tests**: Unit and integration tests
+7. **Rate limiting**: Better portal-specific rate limits
+8. **Monitoring**: Add logging and error tracking
+
+### Completed (Recent)
+- ✅ CloakBrowser integration with proxy support
+- ✅ Cleaned up redundant anti-detection code (CloakBrowser handles at C++ level)
+- ✅ Improved description extraction (more selectors, better fallback)
+- ✅ Increased detail page visit limit (15 → 25)
+- ✅ Extended skills pattern matching (50+ technologies)

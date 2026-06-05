@@ -1,6 +1,7 @@
 """Celery app for background job processing."""
 import os
 from celery import Celery
+from celery.schedules import crontab
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
@@ -18,3 +19,12 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
 )
+
+# Beat schedule for continuous job scraping (runs every 30 minutes)
+celery_app.conf.beat_schedule = {
+    "continuous-job-scrape": {
+        "task": "workers.tasks.continuous_scrape_task",
+        "schedule": crontab(minute="*/30"),  # Every 30 minutes
+        "args": (),
+    },
+}
