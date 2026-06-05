@@ -342,6 +342,10 @@ app.include_router(_build_me_router(get_current_user))
 from resume_tailor.router import build_router as _build_resume_router
 app.include_router(_build_resume_router(get_current_user))
 
+# Phase 4: People-Finder + outreach DRAFTS (see project_goal_4.8.md). Drafts only.
+from people_finder.router import build_router as _build_people_router
+app.include_router(_build_people_router(get_current_user))
+
 
 @app.get("/")
 async def root():
