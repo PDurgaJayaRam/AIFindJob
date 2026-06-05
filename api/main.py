@@ -346,6 +346,10 @@ app.include_router(_build_resume_router(get_current_user))
 from people_finder.router import build_router as _build_people_router
 app.include_router(_build_people_router(get_current_user))
 
+# Phase 6: admin monitoring overview (see project_goal_4.8.md).
+from admin.router import router as _admin_router
+app.include_router(_admin_router)
+
 
 @app.get("/")
 async def root():
