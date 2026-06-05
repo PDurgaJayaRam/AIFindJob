@@ -333,6 +333,12 @@ async def get_me(user=Depends(get_current_user)):
     return {"user_id": user.id, "email": user.email, "full_name": user.full_name}
 
 
+# Phase 2: per-user matching against the shared pool (see project_goal_4.8.md).
+# build_router takes get_current_user to reuse the existing JWT auth dependency.
+from matching.router import build_router as _build_me_router
+app.include_router(_build_me_router(get_current_user))
+
+
 @app.get("/")
 async def root():
     chat_path = project_root / "frontend" / "public" / "chat.html"
