@@ -338,6 +338,10 @@ async def get_me(user=Depends(get_current_user)):
 from matching.router import build_router as _build_me_router
 app.include_router(_build_me_router(get_current_user))
 
+# Phase 3: per-job ATS resume tailoring (see project_goal_4.8.md).
+from resume_tailor.router import build_router as _build_resume_router
+app.include_router(_build_resume_router(get_current_user))
+
 
 @app.get("/")
 async def root():
