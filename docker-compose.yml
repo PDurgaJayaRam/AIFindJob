@@ -1,8 +1,11 @@
 version: "3.8"
 
 services:
-  app:
-    build: .
+  backend:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    command: python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     volumes:
@@ -13,3 +16,41 @@ services:
     environment:
       - DATABASE_URL=sqlite+aiosqlite:///./data/jobs.db
     restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend-3d
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - ./frontend-3d:/app
+      - /app/node_modules
+    restart: unless-stopped
+
+  # Optional: Redis for job queue and status
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  # Optional: PostgreSQL for production
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: jobfinder
+      POSTGRES_USER: jobfinder
+      POSTGRES_PASSWORD: jobfinder123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

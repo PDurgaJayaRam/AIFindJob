@@ -1,0 +1,45 @@
+tools:
+    agent:
+        allow:
+            - planner
+            - architect
+            - tdd-guide
+            - security-reviewer
+            - python-reviewer
+            - loop-operator
+            - harness-optimizer
+    shell:
+        allow:
+            - python *
+            - echo *
+            - node *
+            - npm *
+            - npx *
+            - ecc *
+            - bash *
+            - pwsh *
+            - cd *
+            - Select-String *
+    skill:
+        allow:
+            - fastapi-patterns
+            - tdd-workflow
+            - security-review
+            - python-patterns
+            - frontend-patterns
+            - excalidraw-diagram-generator
+            - fastapi-python
+            - firecrawl
+            - frontend-design
+            - gstack
+            - playwright
+            - postgres
+            - refactor
+            - security-awareness
+            - test-driven-development
+            - ui-design
+            - vercel-react-best-practices
+            - web-scraping
+paths:
+    allow:
+        - path: E:/newjobfinder/prisma-landing/**

@@ -14,10 +14,12 @@ class ResumeAnalyzer:
 
         # Try AI analysis first
         ai_data = await self._ai_analyze(resume_text)
-        if ai_data and ai_data.get("skills"):
+        # Check if we got valid skills (not None, not empty if we have enough text)
+        skills = ai_data.get("skills") if ai_data else None
+        if skills:
             return ai_data
 
-        # Fallback to basic extraction only if AI fails
+        # Fallback to basic extraction if AI failed or returned no skills
         return self._basic_extract(resume_text)
 
     async def _ai_analyze(self, text: str) -> Dict:
@@ -58,6 +60,10 @@ IMPORTANT RULES:
                 max_tokens=500,
             )
 
+            if not response or not response.strip():
+                print("AI returned empty response, falling back to basic extract")
+                return {}
+
             # Clean response - handle various formats
             response = response.strip()
 
@@ -91,7 +97,9 @@ IMPORTANT RULES:
                 "improvements": data.get("improvements", []),
             }
         except Exception as e:
+            import traceback
             print(f"AI analysis failed: {e}")
+            traceback.print_exc()
             return {}
 
     def _basic_extract(self, text: str) -> Dict:

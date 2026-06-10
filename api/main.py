@@ -32,6 +32,7 @@ from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, Depen
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr
 
 from jose import JWTError, jwt
@@ -78,6 +79,10 @@ from agents.workflow.multi_agent import workflow
 # Store for messages
 agent_messages = []
 
+# Token blacklist for logout (lightweight in-memory solution)
+_revoked_tokens: dict = {}  # token -> expiry timestamp
+_BLACKLIST_CLEANUP_INTERVAL = 300  # Clean up every 5 minutes
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -100,59 +105,18 @@ async def lifespan(app: FastAPI):
     scrape_interval = int(os.getenv("SCRAPE_INTERVAL_MINUTES", "5"))
     
     async def continuous_scrape_job():
-        """Background job that runs the full pipeline for all active users."""
+        """Background job: ingest jobs from all sources into the central pool."""
         import logging
         logger = logging.getLogger("scheduler")
-        logger.info("Running scheduled full pipeline...")
+        logger.info("Running scheduled global ingestion...")
         
         try:
-            from database.engine import async_session
-            from database.models import User, UserPreference, Resume
-            from agents.orchestrator.orchestrator import AgentOrchestrator
-            from sqlalchemy import select
-            
-            async with async_session() as session:
-                result = await session.execute(select(User).where(User.is_active == True))
-                users = result.scalars().all()
-                
-                for user in users:
-                    try:
-                        # Get preferences and resume
-                        pref_result = await session.execute(
-                            select(UserPreference).where(UserPreference.user_id == user.id)
-                        )
-                        prefs = pref_result.scalar_one_or_none()
-                        
-                        resume_result = await session.execute(
-                            select(Resume).where(Resume.user_id == user.id)
-                                .order_by(Resume.created_at.desc()).limit(1)
-                        )
-                        resume = resume_result.scalar_one_or_none()
-                        
-                        if not resume:
-                            continue
-                        
-                        keywords = prefs.desired_roles if prefs and prefs.desired_roles else ["Python Developer"]
-                        locations = prefs.desired_locations if prefs and prefs.desired_locations else ["Hyderabad"]
-                        skills = prefs.skills if prefs and prefs.skills else (resume.skills or [])
-                        
-                        # Run FULL pipeline: Jobs + Company Intel + People + Outreach
-                        orch = AgentOrchestrator()
-                        pipeline_result = await orch.run_full_combo(
-                            resume_text=resume.text_content or "",
-                            keywords=keywords,
-                            locations=locations,
-                            companies=None,  # Will be discovered during job search
-                            auto_apply=prefs.auto_apply_enabled if prefs else False,
-                            match_threshold=60.0,
-                        )
-                        
-                        logger.info(f"Pipeline complete for user {user.id}: {pipeline_result}")
-                        
-                    except Exception as e:
-                        logger.error(f"Pipeline error for user {user.id}: {e}")
+            from ingestion.engine import run_all_sources
+            results = await run_all_sources()
+            total_new = sum(r.get("new", 0) for r in results)
+            logger.info(f"Scheduled ingestion complete: {results}, total_new={total_new}")
         except Exception as e:
-            logger.error(f"Scheduler error: {e}")
+            logger.error(f"Scheduled ingestion error: {e}")
     
     scheduler.add_job(
         continuous_scrape_job,
@@ -233,29 +197,42 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
+def _is_token_revoked(token: str) -> bool:
+    """Check if token is in blacklist. Returns True if revoked/expired."""
+    global _revoked_tokens
+    if token not in _revoked_tokens:
+        return False
+    # Check if entry has expired (cleanup)
+    expiry = _revoked_tokens[token]
+    if datetime.utcnow().timestamp() > expiry:
+        del _revoked_tokens[token]
+        return False
+    return True
+
+
+def _revoke_token(token: str):
+    """Add token to blacklist until its natural expiry."""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        exp = payload.get("exp", 0)
+        _revoked_tokens[token] = exp
+    except:
+        pass  # Invalid token, just ignore
+
+
 async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
-    """Extract user from JWT token. Falls back to default user if no token."""
+    """Extract user from JWT token. NO fallback - requires valid token."""
     if credentials is None:
-        # Backward-compatible: no token = default user
-        from database.engine import async_session
-        from database.models import User
-        from sqlalchemy import select
-        async with async_session() as session:
-            result = await session.execute(select(User).where(User.id == 1))
-            user = result.scalar_one_or_none()
-            if not user:
-                # Create default user
-                # Use bcrypt directly to avoid passlib/bcrypt 5.x incompatibility
-                import bcrypt as _bcrypt
-                hashed = _bcrypt.hashpw(b"default", _bcrypt.gensalt()).decode()
-                user = User(id=1, email="default@local", hashed_password=hashed, full_name="Default User")
-                session.add(user)
-                await session.commit()
-                await session.refresh(user)
-            return user
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    token = credentials.credentials
+    
+    # Check if token is revoked
+    if _is_token_revoked(token):
+        raise HTTPException(status_code=401, detail="Token has been revoked. Please login.")
 
     try:
-        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithm=ALGORITHM)
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("sub")
         if user_id is None:
             raise HTTPException(status_code=401, detail="Invalid token")
@@ -337,6 +314,17 @@ async def get_me(user=Depends(get_current_user)):
     return {"user_id": user.id, "email": user.email, "full_name": user.full_name}
 
 
+@app.post("/auth/logout")
+async def logout(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
+    """Logout user with token invalidation (adds to blacklist until expiry)."""
+    if credentials:
+        token = credentials.credentials
+        _revoke_token(token)
+    
+    logger.info("User logged out")
+    return {"message": "Successfully logged out"}
+
+
 # Phase 2: per-user matching against the shared pool (see project_goal_4.8.md).
 # build_router takes get_current_user to reuse the existing JWT auth dependency.
 from matching.router import build_router as _build_me_router
@@ -350,6 +338,10 @@ app.include_router(_build_resume_router(get_current_user))
 from people_finder.router import build_router as _build_people_router
 app.include_router(_build_people_router(get_current_user))
 
+# Phase 5: Auto-apply agent with isolated portal plugins (see project_goal_4.8.md).
+from agents.auto_apply.router import build_router as _build_auto_apply_router
+app.include_router(_build_auto_apply_router(get_current_user))
+
 # Phase 6: admin monitoring overview (see project_goal_4.8.md).
 from admin.router import router as _admin_router
 app.include_router(_admin_router)
@@ -357,20 +349,19 @@ app.include_router(_admin_router)
 
 @app.get("/")
 async def root():
-    chat_path = project_root / "frontend" / "public" / "chat.html"
-    if chat_path.exists():
-        return FileResponse(str(chat_path))
-    dashboard_path = project_root / "frontend" / "public" / "dashboard.html"
-    if dashboard_path.exists():
-        return FileResponse(str(dashboard_path))
-    return {"status": "ok", "app": "Job AI Agent", "version": "1.0.0"}
+    """Serve the main SPA index.html."""
+    index_path = project_root / "frontend-3d" / "dist" / "index.html"
+    if index_path.exists():
+        return FileResponse(str(index_path))
+    return {"status": "ok", "app": "Job AI Agent", "version": "1.0.0", "note": "Frontend not built. Run 'cd frontend-3d && npm run build'."}
 
 
 @app.get("/dashboard")
 async def dashboard():
-    dashboard_path = project_root / "frontend" / "public" / "dashboard.html"
-    if dashboard_path.exists():
-        return FileResponse(str(dashboard_path))
+    """Redirect /dashboard to root (SPA handles routing)."""
+    index_path = project_root / "frontend-3d" / "dist" / "index.html"
+    if index_path.exists():
+        return FileResponse(str(index_path))
     return {"status": "ok", "message": "Dashboard not found"}
 
 
@@ -439,6 +430,48 @@ async def trigger_scrape(user=Depends(get_current_user)):
 
 # === LIVE SCRAPER MONITOR ===
 
+@app.post("/live-scraper/seed-demo-jobs")
+async def seed_demo_jobs(background_tasks: BackgroundTasks):
+    """Seed demo jobs for testing matching (India tech jobs)."""
+    from database.engine import async_session
+    from database.models import Job
+    
+    demo_jobs = [
+        {"title": "Junior Java Developer", "company": "TCS", "location": "Hyderabad", 
+         "skills": ["Java", "SQL", "Spring"], "desc": "Entry level Java developer position. 0-2 years experience required."},
+        {"title": "Python Django Developer", "company": "Infosys", "location": "Bangalore", 
+         "skills": ["Python", "Django", "SQL"], "desc": "Python backend developer with Django framework."},
+        {"title": "C# .NET Developer - Fresher", "company": "Wipro", "location": "Hyderabad", 
+         "skills": ["C#", ".NET", "SQL Server"], "desc": "Fresher C# developer position. Entry level job."},
+        {"title": "Software Engineer - Java", "company": "Accenture", "location": "Gurgaon", 
+         "skills": ["Java", "Microservices", "Spring Boot"], "desc": "Java software engineer for enterprise applications."},
+        {"title": "Junior Python Developer - Fresher", "company": "HCL Technologies", "location": "Noida", 
+         "skills": ["Python", "Flask", "REST API"], "desc": "Python internship for freshers. Entry level position."},
+        {"title": "Backend Developer - Node.js", "company": "Tech Mahindra", "location": "Pune", 
+         "skills": ["Node.js", "JavaScript", "MongoDB"], "desc": "Node.js backend developer with 1-3 years experience."},
+    ]
+    
+    async def seed():
+        async with async_session() as session:
+            for job in demo_jobs:
+                session.add(Job(
+                    user_id=None,
+                    title=job["title"],
+                    company=job["company"],
+                    location=job["location"],
+                    skills_required=job["skills"],
+                    description=job["desc"],
+                    source="demo-data",
+                    source_url=f"https://demo.com/jobs/{job['title'].replace(' ', '-').lower()}",
+                    remote=False,
+                    fresher_friendly=True,
+                ))
+            await session.commit()
+    
+    background_tasks.add_task(seed)
+    return {"status": "seeding", "message": f"Adding {len(demo_jobs)} demo tech jobs to pool..."}
+
+
 @app.get("/live-scraper/status")
 async def live_scraper_status():
     """Get current live scraping status, screenshot, and activity log."""
@@ -447,11 +480,14 @@ async def live_scraper_status():
 
 
 @app.post("/live-scraper/start")
-async def live_scraper_start():
+async def live_scraper_start(background_tasks: BackgroundTasks):
     """Start a live scraping session with monitoring."""
     from agents.browser_agent.live_monitor import live_monitor
     live_monitor.start_session()
-    return {"status": "started", "message": "Live scraper session started"}
+    
+    # Trigger actual scraping in background with default keywords
+    background_tasks.add_task(_run_demo_sync, "Python", "Hyderabad")
+    return {"status": "started", "message": "Live scraper session started - watching portals..."}
 
 
 @app.post("/live-scraper/stop")
@@ -474,81 +510,129 @@ async def live_scraper_demo(background_tasks: BackgroundTasks):
     return {"status": "demo_started", "message": "Demo is running. Watch the live page for screenshots."}
 
 
-def _run_demo_sync():
+def _run_demo_sync(keywords: str = "Python", location: str = "Hyderabad"):
     """Sync wrapper that creates its own event loop with the right policy (Windows)."""
     import asyncio
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    asyncio.run(_run_demo_async())
+    asyncio.run(_run_demo_async(keywords, location))
 
 
-async def _run_demo_async():
-    """Background task that runs the demo."""
+async def _run_demo_async(keywords: str = "Python", location: str = "Hyderabad"):
+    """Background task that runs live scraping with real job extraction."""
     import traceback
     from agents.browser_agent.live_monitor import live_monitor
 
+    browser = None
     try:
         from playwright.async_api import async_playwright
+        from agents.browser_agent.browser_controller import BrowserController
         import os
 
+        headless = os.getenv("PLAYWRIGHT_HEADLESS", "false").lower() == "true"
+        
         live_monitor.update_status(portal="Browser", action="Launching browser...")
-        await asyncio.sleep(0.5)
-
+        
         async with async_playwright() as p:
-            headless = os.getenv("PLAYWRIGHT_HEADLESS", "false").lower() == "true"
             browser = await p.chromium.launch(
                 headless=headless,
                 args=["--no-sandbox", "--disable-blink-features=AutomationControlled"]
             )
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 800},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             )
             page = await context.new_page()
 
             portals = [
-                ("Naukri", "https://www.naukri.com/java-developer-jobs-in-hyderabad"),
-                ("Indeed", "https://www.indeed.com/jobs?q=java+developer&l=hyderabad"),
-                ("LinkedIn", "https://www.linkedin.com/jobs/search/?keywords=java%20developer&location=hyderabad"),
-                ("Internshala", "https://internshala.com/internships/java-internship/"),
-                ("Wellfound", "https://wellfound.com/jobs"),
+                ("naukri", f"https://www.naukri.com/{keywords.replace(' ', '-')}-jobs-in-{location.lower().replace(' ', '-')}"),
+                ("indeed", f"https://www.indeed.com/jobs?q={keywords}&l={location}"),
+                ("linkedin", f"https://www.linkedin.com/jobs/search/?keywords={keywords.replace(' ', '%20')}&location={location}"),
             ]
 
-            for name, url in portals:
+            all_jobs = []
+            for portal_name, url in portals:
                 if not live_monitor.is_running:
                     break
+
                 try:
-                    live_monitor.update_status(portal=name, url=url, action=f"Navigating to {name}...")
-                    await page.goto(url, wait_until="domcontentloaded", timeout=20000)
-                    await page.wait_for_timeout(2500)
-                    ss_bytes = await page.screenshot(type="jpeg", full_page=False, quality=50)
+                    live_monitor.update_status(portal=portal_name, url=url, action=f"Searching {portal_name}...")
+                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                    await asyncio.sleep(3)  # Wait for page to load
+
+                    # Take screenshot
+                    ss_bytes = await page.screenshot(type="jpeg", full_page=False, quality=60)
                     live_monitor.set_screenshot(screenshot_bytes=ss_bytes)
-                    live_monitor.update_status(portal=name, url=url, action=f"Captured screenshot of {name}")
+                    live_monitor.update_status(portal=portal_name, action=f"Extracting jobs from {portal_name}...")
 
-                    await page.evaluate("window.scrollBy(0, 500)")
-                    await page.wait_for_timeout(1000)
-                    ss_bytes = await page.screenshot(type="jpeg", full_page=False, quality=50)
-                    live_monitor.set_screenshot(screenshot_bytes=ss_bytes)
-                    live_monitor.update_status(portal=name, url=url, action=f"Scrolled {name} jobs list")
+                    # Extract jobs using JavaScript
+                    if portal_name == "naukri":
+                        jobs = await page.evaluate("""() => {
+                            const jobs = [];
+                            document.querySelectorAll('a[href*="/job-listings-"]').forEach(a => {
+                                const href = a.href;
+                                const title = a.innerText?.trim() || '';
+                                if (href && title.length > 5 && title.length < 150) {
+                                    const lines = (a.closest('div')?.innerText || '').split('\\n').filter(l => l.trim());
+                                    jobs.push({
+                                        title,
+                                        company: lines.find(l => /^[A-Z]/.test(l)) || 'Unknown',
+                                        location: lines.find(l => /hyderabad|bangalore|chennai|mumbai/i.test(l)) || 'Unknown',
+                                        source_url: href
+                                    });
+                                }
+                            });
+                            return jobs.slice(0, 10);
+                        }""")
+                    elif portal_name == "indeed":
+                        jobs = await page.evaluate("""() => {
+                            const jobs = [];
+                            document.querySelectorAll('a[href*="/viewjob"], a[data-jk]').forEach(a => {
+                                const href = a.href;
+                                const title = a.querySelector('h2')?.innerText || a.innerText?.trim() || '';
+                                if (href && title.length > 5) {
+                                    jobs.push({
+                                        title,
+                                        company: a.querySelector('[data-company]')?.innerText || 'Unknown',
+                                        location: a.querySelector('[data-location]')?.innerText || 'Unknown',
+                                        source_url: href
+                                    });
+                                }
+                            });
+                            return jobs.slice(0, 10);
+                        }""")
+                    else:
+                        jobs = []
 
-                    live_monitor.add_job({
-                        "title": f"Sample {name} Job - Java Developer",
-                        "company": f"Demo Company {name}",
-                        "location": "Hyderabad"
-                    })
+                    for job in jobs:
+                        live_monitor.add_job({
+                            "title": job.get("title", "Unknown"),
+                            "company": job.get("company", "Unknown"),
+                            "location": job.get("location", "Unknown"),
+                            "portal": portal_name
+                        })
+                    all_jobs.extend(jobs)
 
-                    await page.wait_for_timeout(1500)
+                    live_monitor.update_status(portal=portal_name, action=f"Found {len(jobs)} jobs - visiting next portal")
+                    await asyncio.sleep(2)
+
                 except Exception as e:
-                    err_short = str(e)[:150] if str(e) else type(e).__name__
-                    live_monitor.add_error(f"{name}: {err_short}")
-                    live_monitor.update_status(portal=name, action=f"Error on {name}, moving on...")
+                    err = str(e)[:100]
+                    live_monitor.add_error(f"{portal_name}: {err}")
+                    live_monitor.update_status(portal=portal_name, action=f"Error on {portal_name}")
 
-            live_monitor.update_status(action="Demo complete - visited 5 portals")
-            await browser.close()
+            live_monitor.update_status(action=f"Scraping complete! Found {len(all_jobs)} total jobs")
+
     except Exception as e:
-        err_msg = str(e) or traceback.format_exc() or type(e).__name__
-        live_monitor.add_error(f"Demo failed: {err_msg[:2000]}")
-        live_monitor.update_status(action=f"Demo error: {err_msg[:100]}")
+        err_msg = str(e) or traceback.format_exc()
+        live_monitor.add_error(f"Scraping failed: {err_msg[:500]}")
+        live_monitor.update_status(action=f"Scraping error: {str(e)[:100]}")
+    finally:
+        try:
+            if browser:
+                await browser.close()
+        except:
+            pass
 
 
 # === COMPANY RESEARCH ===
@@ -810,7 +894,7 @@ async def get_dashboard():
 
 @app.post("/resume/parse")
 async def parse_resume(file: UploadFile = File(...)):
-    """Accept a resume file and extract text from PDF, DOCX, or TXT."""
+    """Accept a resume file and extract text + parse skills."""
     try:
         content = await file.read()
         filename = file.filename.lower()
@@ -842,7 +926,26 @@ async def parse_resume(file: UploadFile = File(...)):
         if not text.strip():
             raise HTTPException(status_code=400, detail="Could not extract text from file. Try .txt format.")
 
-        return {"filename": file.filename, "extracted_text": text.strip()[:5000]}
+        # Parse with AI-powered resume analyzer
+        from agents.resume_analyzer import ResumeAnalyzer
+        analyzer = ResumeAnalyzer()
+        try:
+            analysis = await analyzer.analyze(text)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"Resume analyzer error: {e}")
+
+        return {
+            "filename": file.filename,
+            "text_content": text.strip()[:5000],
+            "skills": analysis.get("skills", []),
+            "experience_years": analysis.get("experience_years", 0),
+            "is_fresher": analysis.get("is_fresher", True),
+            "target_roles": analysis.get("target_roles", []),
+            "email": analysis.get("email", ""),
+            "phone": analysis.get("phone", ""),
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -2134,3 +2237,15 @@ async def run_ui_tars_stream(request: UITarsTaskRequest):
     
     from fastapi.responses import StreamingResponse
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# Serve built frontend static assets (JS/CSS from Vite build)
+app.mount("/assets", StaticFiles(directory=str(project_root / "frontend-3d" / "dist" / "assets")), name="assets")
+
+# SPA fallback - serve index.html for all non-API routes (React Router handles client-side)
+@app.get("/{full_path:path}")
+async def spa_fallback(request: Request, full_path: str):
+    index_path = project_root / "frontend-3d" / "dist" / "index.html"
+    if index_path.exists():
+        return FileResponse(str(index_path))
+    raise HTTPException(status_code=404, detail="Frontend not built. Run 'cd frontend-3d && npm run build'.")

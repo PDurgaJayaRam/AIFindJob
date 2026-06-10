@@ -1,145 +1,82 @@
-# Combo AI Agent
+# JOBFinder SaaS — AI Career Agent for Unemployed Youth
 
-A production-grade combo application that unifies an **Autonomous AI Career Agent** (job search, resume matching, auto-apply) with a **B2B Lead Generation AI Agent** (company intelligence, pain scoring, outreach generation).
+> **Single source of truth:** See `project_goal_4.8.md` for the complete vision and architecture.
+> **Build order:** Follow phases sequentially. Do NOT skip ahead.
 
-## What It Does
+---
 
-- **Job Discovery**: Searches Indeed, LinkedIn, Naukri for jobs
-- **AI Job Intelligence**: Analyzes descriptions, extracts skills, detects fresher roles
-- **Resume Match Engine**: Generates ATS scores and compatibility rankings
-- **Auto-Apply Agent**: Browser automation via Playwright
-- **Recruiter Finder**: Discovers hiring managers from public data
-- **Networking Agent**: Generates personalized outreach messages
-- **Lead Generation**: Analyzes companies for automation pain signals
-- **Outreach Engine**: AI-generated B2B cold messages
-- **Analytics Dashboard**: Tracks applications, outreach, and pipeline metrics
+## The Mission
 
-## Tech Stack
+Help unemployed youth in India (especially tier-3 college graduates) find jobs by:
+1. **Auto-scraping** jobs 24/7 into a shared pool
+2. **Matching** jobs against user's resume + target role
+3. **Generating** custom ATS-friendly resumes per job
+4. **Finding** contacts at hiring companies (HR, Developer, Manager, etc.)
+5. **Auto-applying** with browser automation (isolated per portal)
 
-| Layer | Technology |
-|-------|------------|
-| Backend | FastAPI, SQLAlchemy, asyncpg |
-| Frontend | React, TailwindCSS, Recharts, Vite |
-| AI | OpenAI / DeepSeek / Anthropic (multi-provider) |
-| Browser | Playwright |
-| Scraping | BeautifulSoup, httpx, fake-useragent |
-| Database | PostgreSQL + Redis |
-| Queue | Celery (optional) |
-| Deploy | Docker + Docker Compose |
+---
+
+## Architecture
+
+```
+Shared Pool (Admin, 24/7)
+       ↓
+Per-User Matching (Instant, no scraping)
+       ↓
+Custom Resume + Contacts (Pure AI)
+       ↓
+Auto-Apply (Optional, isolated)
+```
+
+Each portal/scraper is **independent** - if LinkedIn breaks, other sources keep filling the pool.
+
+---
 
 ## Quick Start
 
-### 1. Clone & Setup
-
+### 1. Setup Environment
 ```bash
-cd "Harshith Games/Project"
 cp .env.example .env
-# Edit .env and add your AI API keys
+# Edit .env with your API keys
 ```
 
-### 2. Run with Docker
-
+### 2. Install Dependencies
 ```bash
-docker-compose up --build
-```
-
-- API: http://localhost:8000
-- Frontend: http://localhost:3000 (via Vite proxy)
-
-### 3. Run Backend Only (local Python)
-
-```bash
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-
-# Start DB & Redis (if using Docker for services)
-docker-compose up -d db redis
-
-# Run API
-uvicorn api.main:app --reload --port 8000
 ```
 
-### 4. Run Frontend Only
-
+### 3. Run Server
 ```bash
-cd frontend
-npm install
-npm run dev
+python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
 ```
 
-## API Endpoints
+### 4. Access
+- Chat: http://localhost:8000/
+- Dashboard: http://localhost:8000/dashboard
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/` | Health check |
-| GET | `/health` | Health check |
-| POST | `/jobs/search` | Run job discovery + match pipeline |
-| POST | `/leads/enrich` | Enrich company leads with AI |
-| POST | `/combo/run` | Run both pipelines in parallel |
-| GET | `/analytics/dashboard` | Get pipeline analytics |
-| GET | `/analytics/applications` | List tracked applications |
-| GET | `/analytics/outreach` | List tracked outreach |
-| POST | `/resume/parse` | Upload and parse a resume file |
+---
 
-## Agent Architecture
+## Build Phases
 
-| Agent | File | Purpose |
-|-------|------|---------|
-| Orchestrator | `agents/orchestrator/orchestrator.py` | Coordinates all agents |
-| Job Discovery | `agents/job_discovery/discovery.py` | Scrapes job boards |
-| Job Intelligence | `agents/job_intelligence/intelligence.py` | AI analysis of JDs |
-| Resume Match | `agents/resume_match/matcher.py` | ATS scoring |
-| Company Intel | `agents/company_intelligence/intel.py` | B2B lead enrichment |
-| People Finder | `agents/people_finder/finder.py` | Recruiter discovery |
-| Networking | `agents/networking/messages.py` | Outreach generation |
-| Auto Apply | `agents/auto_apply/browser_agent.py` | Playwright automation |
-| Tracking | `agents/tracking/tracker.py` | Application tracking |
+| Phase | Goal | Status |
+|-------|------|--------|
+| Phase 0 | Stabilize + rotate keys | ✅ Ready |
+| Phase 1 | Shared ingestion (24/7) | 🔄 Working (RemoteOK, Arbeitnow) |
+| Phase 2 | Auth + matching | ✅ Built |
+| Phase 3 | Custom ATS resumes | 🔄 In progress |
+| Phase 4 | People finder | 🔄 Built |
+| Phase 5 | Auto-apply | ⏳ Pending |
+| Phase 6 | Admin dashboard | 🔄 Built |
 
-## Environment Variables
+---
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `REDIS_URL` | Yes | Redis connection string |
-| `PRIMARY_AI_PROVIDER` | Yes | `deepseek`, `openai`, or `anthropic` |
-| `DEEPSEEK_API_KEY` | If provider=deepseek | DeepSeek API key |
-| `OPENAI_API_KEY` | If provider=openai | OpenAI API key |
-| `ANTHROPIC_API_KEY` | If provider=anthropic | Anthropic API key |
-| `SMTP_HOST` | No | For email outreach |
-| `SMTP_USER` | No | SMTP username |
-| `SMTP_PASSWORD` | No | SMTP password |
+## Documentation
 
-## Folder Structure
+- `project_goal_4.8.md` - Complete vision and architecture
+- `IMPLEMENTATION_PLAN.md` - Detailed implementation phases
+- `CLAUDE.md` - Coding guidelines
 
-```
-career_agent/
-├── agents/               # 9 modular AI agents
-├── ai/                   # Multi-provider AI client + prompts
-├── api/                  # FastAPI routes
-├── browser/              # Playwright helpers
-├── config/               # Settings, env
-├── database/             # SQLAlchemy models + engine
-├── docker/               # Docker assets
-├── frontend/             # React + Tailwind dashboard
-├── scrapers/             # Job board scrapers
-├── workers/              # Celery tasks
-├── tests/                # Pytest suite
-├── data/                 # Local data storage
-├── logs/                 # Application logs
-├── requirements.txt
-├── docker-compose.yml
-├── Dockerfile
-└── README.md
-```
-
-## Compliance & Safety
-
-- Only scrapes publicly visible data
-- Respects rate limits
-- No private data harvesting
-- No bypassing of platform security
-- AI-generated outreach is reviewed before sending
+---
 
 ## License
 

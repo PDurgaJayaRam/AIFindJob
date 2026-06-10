@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  background: #05060a;
+  color: #e5e7eb;
+  font-family: Inter, system-ui, sans-serif;
+}
+
+.glass {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(14px);
+}
+
+.glow-text {
+  text-shadow: 0 0 24px rgba(124, 58, 237, 0.55), 0 0 48px rgba(34, 211, 238, 0.25);
+}

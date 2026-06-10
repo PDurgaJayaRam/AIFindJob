@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -70,10 +70,12 @@ def build_router(get_current_user: Callable) -> APIRouter:
             )
             resume = row.scalar_one_or_none()
             if not resume:
-                return {"has_resume": False}
+                return {"has_resume": False, "name": user.full_name or user.email.split('@')[0]}
             parsed = resume.parsed_data or {}
             return {
                 "has_resume": True,
+                "name": parsed.get("name") or user.full_name or user.email.split('@')[0],
+                "email": user.email,
                 "skills": resume.skills or [],
                 "experience_years": resume.experience_years or 0,
                 "is_fresher": parsed.get("is_fresher", True),
@@ -95,7 +97,7 @@ def build_router(get_current_user: Callable) -> APIRouter:
             )
             resume = row.scalar_one_or_none()
             if not resume:
-                return {"error": "No resume found. POST /me/resume first.", "matches": []}
+                raise HTTPException(status_code=404, detail="No resume found. POST /me/resume first.")
 
             parsed = resume.parsed_data or {}
             profile = {
