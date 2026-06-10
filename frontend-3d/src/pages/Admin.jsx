@@ -76,25 +76,43 @@ export default function Admin() {
   };
 
   return (
-    <div className="min-h-screen px-6 md:px-12 py-8">
-      <div className="flex items-center justify-between mb-8">
-        <Link to="/" className="font-semibold text-white">JOB<span className="text-aqua">Finder</span> Admin</Link>
-        <Link to="/jobs" className="text-gray-300 hover:text-white text-sm">View jobs</Link>
+    <div className="min-h-screen px-6 md:px-12 py-8 relative">
+      {/* Digital grain overlay */}
+      <div className="grain-overlay" />
+
+      {/* Ambient light blobs */}
+      <div className="absolute inset-0 -z-10 pointer-events-none">
+        <div className="ambient-blob ambient-blob-indigo" style={{ top: '-18%', left: '-10%', width: '55vw', height: '55vw' }} />
+        <div className="ambient-blob ambient-blob-teal" style={{ bottom: '-15%', right: '-12%', width: '50vw', height: '50vw' }} />
       </div>
 
-      <h1 className="text-2xl md:text-3xl font-bold text-white mb-2">Ingestion Monitor</h1>
-      <p className="text-gray-400 mb-8">Live status of the 24/7 job pool and browser scraping.</p>
+      <div className="flex items-center justify-between mb-8 relative z-10">
+        <Link to="/" className="font-semibold text-white ease-elastic">JOB<span className="text-aqua">Finder</span> Admin</Link>
+        <Link to="/jobs" className="text-gray-300 hover:text-white text-sm ease-elastic">View jobs</Link>
+      </div>
 
-      {error && <div className="glass rounded-xl p-4 text-amber-300 mb-6">Could not load: {error}</div>}
+      <motion.h1
+        initial={{ filter: 'blur(10px)', opacity: 0 }}
+        animate={{ filter: 'blur(0px)', opacity: 1 }}
+        transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+        className="text-2xl md:text-3xl font-black text-white mb-2 tracking-tighter blur-reveal"
+      >
+        Ingestion Monitor
+      </motion.h1>
+      <p className="text-gray-400 mb-8 blur-reveal" style={{ animationDelay: '0.1s' }}>
+        Live status of the 24/7 job pool and browser scraping.
+      </p>
+
+      {error && <div className="glass rounded-xl p-4 text-amber-300 mb-6 ease-elastic">Could not load: {error}</div>}
 
       {/* Live Scraper Control */}
-      <div className="glass rounded-2xl p-6 mb-8">
+      <div className="glass rounded-2xl p-6 mb-8 ease-elastic">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-bold text-white">Live Browser Scraping</h2>
+          <h2 className="text-xl font-black text-white tracking-tighter">Live Browser Scraping</h2>
           <button
             onClick={liveScraperActive ? handleStopScraper : handleStartScraper}
             disabled={false}
-            className={`px-6 py-2.5 rounded-full font-semibold transition-all ${
+            className={`px-6 py-2.5 rounded-full font-semibold transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] ${
               liveScraperActive
                 ? 'bg-red-500/20 text-red-300 hover:bg-red-500/30'
                 : 'bg-gradient-to-r from-nebula to-aqua text-ink hover:opacity-90'
@@ -176,22 +194,36 @@ export default function Admin() {
       {/* Pool Stats */}
       {data && (
         <>
-          <div className="glass rounded-2xl p-6 mb-8">
+          <div className="glass rounded-2xl p-6 mb-8 ease-elastic">
             <p className="text-gray-400 text-sm">Total jobs in pool</p>
-            <p className="text-4xl font-bold text-white">{data.pool?.total_jobs ?? 0}</p>
+            <motion.p
+              initial={{ filter: 'blur(10px)', opacity: 0 }}
+              animate={{ filter: 'blur(0px)', opacity: 1 }}
+              transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+              className="text-4xl font-black text-white blur-reveal"
+            >
+              {data.pool?.total_jobs ?? 0}
+            </motion.p>
             <div className="flex flex-wrap gap-2 mt-4">
               {Object.entries(data.pool?.by_source || {}).map(([src, cnt]) => (
-                <span key={src} className="text-sm text-aqua/90 bg-aqua/10 rounded-md px-3 py-1">
+                <span key={src} className="text-sm text-aqua/90 bg-aqua/10 rounded-md px-3 py-1 ease-elastic">
                   {src}: {cnt}
                 </span>
               ))}
             </div>
           </div>
 
-          <h2 className="text-lg font-semibold text-white mb-3">Sources</h2>
+          <motion.h2
+            initial={{ filter: 'blur(10px)', opacity: 0 }}
+            animate={{ filter: 'blur(0px)', opacity: 1 }}
+            transition={{ duration: 0.8, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
+            className="text-lg font-black text-white mb-3 tracking-tighter blur-reveal"
+          >
+            Sources
+          </motion.h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {(data.sources || []).map((s) => (
-              <div key={s.name} className="glass rounded-xl p-4">
+              <div key={s.name} className="glass rounded-xl p-4 ease-elastic">
                 <div className="flex items-center justify-between">
                   <span className="font-semibold text-white">{s.name}</span>
                   <span className={`text-xs rounded-full px-2 py-0.5 ${s.ok ? 'bg-green-500/20 text-green-300' : 'bg-red-500/20 text-red-300'}`}>

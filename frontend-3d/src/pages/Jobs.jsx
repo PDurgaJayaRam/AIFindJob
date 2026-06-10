@@ -77,43 +77,65 @@ export default function Jobs() {
   };
 
   return (
-    <div className="min-h-screen px-6 md:px-12 py-8">
-      <div className="flex items-center justify-between mb-8">
-        <Link to="/" className="font-semibold text-white">
+    <div className="min-h-screen px-6 md:px-12 py-8 relative">
+      {/* Digital grain overlay */}
+      <div className="grain-overlay" />
+
+      {/* Ambient light blobs */}
+      <div className="absolute inset-0 -z-10 pointer-events-none">
+        <div className="ambient-blob ambient-blob-teal" style={{ top: '-15%', left: '-5%', width: '50vw', height: '50vw' }} />
+        <div className="ambient-blob ambient-blob-purple" style={{ bottom: '-18%', right: '-10%', width: '45vw', height: '45vw' }} />
+      </div>
+
+      <div className="flex items-center justify-between mb-8 relative z-10">
+        <Link to="/" className="font-semibold text-white ease-elastic">
           JOB<span className="text-aqua">Finder</span>
         </Link>
         <div className="flex gap-4 text-sm">
-          <Link to="/" className="text-gray-300 hover:text-white">Home</Link>
+          <Link to="/" className="text-gray-300 hover:text-white ease-elastic">Home</Link>
           {profile ? (
             <>
               <button
                 onClick={() => navigate('/matches')}
-                className="glass rounded-full px-4 py-1.5 hover:border-aqua/40 text-white"
+                className="glass rounded-full px-4 py-1.5 hover:border-aqua/40 text-white ease-elastic"
               >
                 My Matches
               </button>
-              <span className="glass rounded-full px-4 py-1.5">
+              <span className="glass rounded-full px-4 py-1.5 ease-elastic">
                 {profile.name || profile.email || 'Account'}
               </span>
               <button
                 onClick={handleLogout}
-                className="text-gray-400 hover:text-white transition-colors"
+                className="text-gray-400 hover:text-white transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
               >
                 Sign out
               </button>
             </>
           ) : (
-            <Link to="/login" className="glass rounded-full px-4 py-1.5 hover:border-aqua/40">
+            <Link to="/login" className="glass rounded-full px-4 py-1.5 hover:border-aqua/40 ease-elastic">
               Sign in
             </Link>
           )}
         </div>
       </div>
 
-      <h1 className="text-2xl md:text-3xl font-bold text-white mb-2">Live job pool</h1>
-      <p className="text-gray-400 mb-8">
+      <motion.h1
+        initial={{ opacity: 0, y: 20, filter: 'blur(10px)' }}
+        animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+        transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+        className="text-2xl md:text-3xl font-bold text-white mb-2 tracking-tighter blur-reveal"
+      >
+        Live job pool
+      </motion.h1>
+      <motion.p
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.8, delay: 0.1 }}
+        className="text-gray-400 mb-8 blur-reveal"
+        style={{ animationDelay: '0.1s' }}
+      >
         Jobs collected by the 24/7 ingestion engine.
-      </p>
+      </motion.p>
 
       {/* Cinematic Loading State */}
       {loading && (
@@ -126,9 +148,14 @@ export default function Jobs() {
             <div className="w-20 h-20 border-4 border-nebula/30 border-t-aqua rounded-full animate-spin" />
             <div className="absolute -inset-4 w-28 h-28 border-2 border-aqua/20 rounded-full animate-pulse" />
           </div>
-          <h2 className="text-3xl font-bold text-white mb-3">
+          <motion.h2
+            initial={{ filter: 'blur(10px)', opacity: 0 }}
+            animate={{ filter: 'blur(0px)', opacity: 1 }}
+            transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+            className="text-3xl font-black text-white mb-3 tracking-tighter blur-reveal"
+          >
             WAIT — WE ARE GETTING DATA
-          </h2>
+          </motion.h2>
           <p className="text-gray-300 text-center max-w-md">
             Our AI agents are collecting the best jobs for you across multiple sources.
           </p>
@@ -137,7 +164,7 @@ export default function Jobs() {
               {ingestionStatus.sources.map(s => (
                 <span
                   key={s.name}
-                  className={`text-xs px-3 py-1 rounded-full ${
+                  className={`text-xs px-3 py-1 rounded-full ease-elastic ${
                     s.ok ? 'bg-aqua/20 text-aqua' : 'bg-amber-500/20 text-amber-400'
                   }`}
                 >
@@ -153,7 +180,7 @@ export default function Jobs() {
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
-          className="glass rounded-xl p-4 text-amber-300 max-w-md mx-auto mb-6"
+          className="glass rounded-xl p-4 text-amber-300 max-w-md mx-auto mb-6 ease-elastic"
         >
           Could not load jobs: {error}
           <br />
@@ -167,11 +194,18 @@ export default function Jobs() {
           animate={{ opacity: 1, scale: 1 }}
           className="flex flex-col items-center justify-center py-20"
         >
-          <h2 className="text-3xl font-bold text-white mb-3">WAIT — WE ARE GETTING DATA</h2>
+          <motion.h2
+            initial={{ filter: 'blur(10px)', opacity: 0 }}
+            animate={{ filter: 'blur(0px)', opacity: 1 }}
+            transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+            className="text-3xl font-black text-white mb-3 tracking-tighter blur-reveal"
+          >
+            WAIT — WE ARE GETTING DATA
+          </motion.h2>
           <p className="text-gray-300 mb-6">The job pool is empty. Trigger ingestion in the admin panel.</p>
           <Link
             to="/admin"
-            className="glass rounded-full px-6 py-2.5 text-aqua hover:border-aqua/40"
+            className="glass rounded-full px-6 py-2.5 text-aqua hover:border-aqua/40 ease-elastic"
           >
             Go to Admin Panel
           </Link>
@@ -182,14 +216,14 @@ export default function Jobs() {
         <>
           {/* Show low relevance warning and demo seed option */}
           {ingestionStatus?.sources && !ingestionStatus.sources.some(s => s.name?.includes('naukri') || s.name?.includes('india')) && (
-            <div className="glass rounded-xl p-4 mb-6 border border-amber-500/30">
+            <div className="glass rounded-xl p-4 mb-6 border border-amber-500/30 ease-elastic">
               <p className="text-amber-300 text-sm mb-3">
                 ⚠️ Low relevance jobs shown. Use demo mode to see India tech jobs.
               </p>
               <button
                 onClick={handleSeedDemoJobs}
                 disabled={seeding}
-                className="px-4 py-2 bg-gradient-to-r from-nebula to-aqua text-ink rounded-full text-sm font-semibold hover:opacity-90 disabled:opacity-50"
+                className="px-4 py-2 bg-gradient-to-r from-nebula to-aqua text-ink rounded-full text-sm font-semibold hover:opacity-90 disabled:opacity-50 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
               >
                 {seeding ? 'Adding jobs…' : 'Seed Demo Tech Jobs'}
               </button>
@@ -199,7 +233,7 @@ export default function Jobs() {
           <div className="mb-6 flex justify-end">
             <button
               onClick={handleGetMyMatches}
-              className="bg-gradient-to-r from-nebula to-aqua text-ink font-semibold rounded-full px-6 py-2.5 hover:opacity-90"
+              className="bg-gradient-to-r from-nebula to-aqua text-ink font-semibold rounded-full px-6 py-2.5 hover:opacity-90 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
             >
               Find My Matching Jobs
             </button>

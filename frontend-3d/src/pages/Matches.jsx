@@ -159,40 +159,56 @@ export default function Matches() {
         )}
       </AnimatePresence>
 
-      <div className="min-h-screen px-6 md:px-12 py-8">
-        <div className="flex items-center justify-between mb-8">
-          <Link to="/" className="font-semibold text-white">
+      <div className="min-h-screen px-6 md:px-12 py-8 relative">
+        {/* Digital grain overlay */}
+        <div className="grain-overlay" />
+
+        {/* Ambient light blobs */}
+        <div className="absolute inset-0 -z-10 pointer-events-none">
+          <div className="ambient-blob ambient-blob-indigo" style={{ top: '-18%', left: '-12%', width: '55vw', height: '55vw' }} />
+          <div className="ambient-blob ambient-blob-purple" style={{ bottom: '-20%', right: '-10%', width: '50vw', height: '50vw' }} />
+        </div>
+
+        <div className="flex items-center justify-between mb-8 relative z-10">
+          <Link to="/" className="font-semibold text-white ease-elastic">
             JOB<span className="text-aqua">Finder</span>
           </Link>
           <div className="flex gap-4 text-sm items-center">
-            <Link to="/jobs" className="text-gray-300 hover:text-white">All jobs</Link>
-            <Link to="/admin" className="text-gray-300 hover:text-white">Admin</Link>
+            <Link to="/jobs" className="text-gray-300 hover:text-white ease-elastic">All jobs</Link>
+            <Link to="/admin" className="text-gray-300 hover:text-white ease-elastic">Admin</Link>
             {profile ? (
               <>
-                <span className="glass rounded-full px-4 py-1.5">
+                <span className="glass rounded-full px-4 py-1.5 ease-elastic">
                   {profile.name || profile.email || 'Account'}
                 </span>
                 <button
                   onClick={handleLogout}
-                  className="text-gray-400 hover:text-white transition-colors"
+                  className="text-gray-400 hover:text-white transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
                 >
                   Sign out
                 </button>
               </>
             ) : (
-              <Link to="/login" className="glass rounded-full px-4 py-1.5 hover:border-aqua/40">
+              <Link to="/login" className="glass rounded-full px-4 py-1.5 hover:border-aqua/40 ease-elastic">
                 Sign in
               </Link>
             )}
           </div>
         </div>
 
-        <h1 className="text-2xl md:text-3xl font-bold text-white mb-2">Your matches</h1>
-        <p className="text-gray-400 mb-8">
+        <motion.h1
+          initial={{ filter: 'blur(10px)', opacity: 0 }}
+          animate={{ filter: 'blur(0px)', opacity: 1 }}
+          transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+          className="text-2xl md:text-3xl font-black text-white mb-2 tracking-tighter blur-reveal"
+        >
+          Your matches
+        </motion.h1>
+        <p className="text-gray-400 mb-8 blur-reveal" style={{ animationDelay: '0.1s' }}>
           Pool jobs ranked against your resume and target role.
           <button 
             onClick={triggerRefresh}
-            className="ml-4 text-aqua text-xs hover:underline"
+            className="ml-4 text-aqua text-xs hover:underline transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
           >
             Refresh
           </button>
@@ -224,7 +240,7 @@ export default function Matches() {
               <div className="w-20 h-20 border-4 border-nebula/30 border-t-aqua rounded-full animate-spin" />
               <div className="absolute inset-0 w-20 h-20 border-4 border-transparent border-t-gradient-to-r border-t-nebula rounded-full animate-spin" style={{ animationDelay: '-0.5s' }} />
             </div>
-            <h2 className="text-3xl font-bold text-white mb-3">
+            <h2 className="text-3xl font-black text-white mb-3 tracking-tighter blur-reveal">
               WAIT — WE ARE GETTING DATA
             </h2>
             <p className="text-gray-300 text-center max-w-md">
@@ -236,7 +252,7 @@ export default function Matches() {
                 </>
               )}
             </p>
-            <div className="mt-6 glass rounded-full px-6 py-2">
+            <div className="mt-6 glass rounded-full px-6 py-2 ease-elastic">
               <span className="text-aqua">
                 {matches.length > 0 ? 'Scoring your jobs...' : 'No matches yet — be the first!'}
               </span>
@@ -248,7 +264,7 @@ export default function Matches() {
           <motion.div
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="glass rounded-xl p-4 max-w-md mx-auto mb-6 flex flex-col items-center"
+            className="glass rounded-xl p-4 max-w-md mx-auto mb-6 flex flex-col items-center ease-elastic"
           >
             {error.includes('401') 
               ? (
@@ -256,7 +272,7 @@ export default function Matches() {
                   <p className="text-aqua text-center mb-3">Please sign in to use resume features</p>
                   <button
                     onClick={() => navigate('/login')}
-                    className="px-6 py-2 bg-gradient-to-r from-nebula to-aqua text-ink font-semibold rounded-full text-sm hover:opacity-90"
+                    className="px-6 py-2 bg-gradient-to-r from-nebula to-aqua text-ink font-semibold rounded-full text-sm hover:opacity-90 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
                   >
                     Sign In
                   </button>
@@ -268,7 +284,7 @@ export default function Matches() {
                   <p className="text-aqua text-center mb-3">Please set up your profile to see matches</p>
                   <button
                     onClick={() => setNeedsOnboarding(true)}
-                    className="px-6 py-2 bg-gradient-to-r from-nebula to-aqua text-ink font-semibold rounded-full text-sm hover:opacity-90"
+                    className="px-6 py-2 bg-gradient-to-r from-nebula to-aqua text-ink font-semibold rounded-full text-sm hover:opacity-90 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
                   >
                     Set Up Profile
                   </button>
@@ -308,7 +324,7 @@ export default function Matches() {
                 <p className="text-gray-400 mb-4">No matches found for your profile yet.</p>
                 <button
                   onClick={() => setNeedsOnboarding(true)}
-                  className="px-4 py-2 bg-gradient-to-r from-nebula/20 to-aqua/20 text-aqua rounded-full text-sm hover:from-nebula/30 hover:to-aqua/30"
+                  className="px-4 py-2 bg-gradient-to-r from-nebula/20 to-aqua/20 text-aqua rounded-full text-sm hover:from-nebula/30 hover:to-aqua/30 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
                 >
                   Update Your Profile
                 </button>

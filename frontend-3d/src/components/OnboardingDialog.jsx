@@ -123,7 +123,8 @@ export default function OnboardingDialog({ onComplete }) {
           initial={{ scale: 0.9, y: 20 }}
           animate={{ scale: 1, y: 0 }}
           exit={{ scale: 0.9, y: 20 }}
-          className="relative glass rounded-3xl p-8 w-full max-w-2xl max-h-[90vh] overflow-y-auto"
+          transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+          className="relative glass rounded-3xl p-8 w-full max-w-2xl max-h-[90vh] overflow-y-auto ease-elastic"
         >
           {/* 3D background elements */}
           <div className="absolute inset-0 -z-10 opacity-30">
@@ -155,8 +156,15 @@ export default function OnboardingDialog({ onComplete }) {
             >
               {step === 1 && (
                 <div>
-                  <h2 className="text-3xl font-bold text-white mb-2">Welcome to JOB<span className="text-aqua">Finder</span></h2>
-                  <p className="text-gray-300 mb-6">Let's set up your profile to find the perfect jobs for you.</p>
+                  <motion.h2
+                    initial={{ filter: 'blur(10px)', opacity: 0 }}
+                    animate={{ filter: 'blur(0px)', opacity: 1 }}
+                    transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+                    className="text-3xl font-black text-white mb-2 tracking-tighter blur-reveal"
+                  >
+                    Welcome to JOB<span className="text-aqua">Finder</span>
+                  </motion.h2>
+                  <p className="text-gray-300 mb-6 blur-reveal" style={{ animationDelay: '0.1s' }}>Let's set up your profile to find the perfect jobs for you.</p>
 
                   <div className="space-y-6">
                     {/* Resume Upload - PRIMARY */}
@@ -174,7 +182,7 @@ export default function OnboardingDialog({ onComplete }) {
                         />
                         <label
                           htmlFor="resume-upload-inner"
-                          className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-aqua/30 rounded-2xl cursor-pointer hover:border-aqua/50 transition-colors bg-white/5"
+                          className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-aqua/30 rounded-2xl cursor-pointer hover:border-aqua/50 bg-white/[0.02] transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
                         >
                           <svg className="w-12 h-12 text-aqua mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.9l5.5-5.5a4 4 0 015.66 5.66l-3.5 3.5a1 1 0 01-1.42 0l-1.5-1.5" />
@@ -187,7 +195,7 @@ export default function OnboardingDialog({ onComplete }) {
                           </span>
                         </label>
                       </div>
-                      {status && <p className="text-sm text-aqua mt-2">{status}</p>}
+                      {status && <p className="text-sm text-aqua mt-2 blur-reveal">{status}</p>}
                     </div>
 
                     <div className="text-center text-gray-400">
@@ -199,8 +207,15 @@ export default function OnboardingDialog({ onComplete }) {
 
               {step === 2 && (
                 <div>
-                  <h2 className="text-3xl font-bold text-white mb-2">Target Job Role</h2>
-                  <p className="text-gray-300 mb-6">What job roles are you looking for? (Select multiple)</p>
+                  <motion.h2
+                    initial={{ filter: 'blur(10px)', opacity: 0 }}
+                    animate={{ filter: 'blur(0px)', opacity: 1 }}
+                    transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+                    className="text-3xl font-black text-white mb-2 tracking-tighter blur-reveal"
+                  >
+                    Target Job Role
+                  </motion.h2>
+                  <p className="text-gray-300 mb-6 blur-reveal" style={{ animationDelay: '0.1s' }}>What job roles are you looking for? (Select multiple)</p>
 
                   <div className="space-y-4">
                     <div>
@@ -210,11 +225,11 @@ export default function OnboardingDialog({ onComplete }) {
                         onChange={e => setRoleInput(e.target.value)}
                         onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addRole(roleInput))}
                         placeholder="e.g., Python Developer"
-                        className="w-full rounded-lg bg-white/5 border border-white/10 px-4 py-2.5 text-white outline-none focus:border-aqua/50"
+                        className="w-full rounded-lg bg-white/[0.02] border border-white/[0.07] px-4 py-2.5 text-white outline-none focus:border-aqua/50 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
                       />
                       <button
                         onClick={() => addRole(roleInput)}
-                        className="mt-2 px-4 py-1.5 bg-aqua/20 text-aqua rounded-lg text-sm hover:bg-aqua/30"
+                        className="mt-2 px-4 py-1.5 bg-aqua/20 text-aqua rounded-lg text-sm hover:bg-aqua/30 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
                       >
                         Add Role
                       </button>
@@ -227,7 +242,7 @@ export default function OnboardingDialog({ onComplete }) {
                           <button
                             key={role}
                             onClick={() => addRole(role)}
-                            className="px-3 py-1.5 bg-white/5 text-gray-300 rounded-lg text-sm hover:bg-aqua/20 hover:text-aqua transition-colors"
+                            className="px-3 py-1.5 bg-white/[0.02] border border-white/[0.07] text-gray-300 rounded-lg text-sm hover:bg-aqua/20 hover:text-aqua ease-elastic"
                           >
                             {role}
                           </button>
@@ -242,10 +257,10 @@ export default function OnboardingDialog({ onComplete }) {
                           {profile.target_roles.map(role => (
                             <span
                               key={role}
-                              className="px-3 py-1.5 bg-gradient-to-r from-nebula/30 to-aqua/30 text-white rounded-lg text-sm flex items-center gap-2"
+                              className="px-3 py-1.5 bg-gradient-to-r from-nebula/30 to-aqua/30 text-white rounded-lg text-sm flex items-center gap-2 ease-elastic"
                             >
                               {role}
-                              <button onClick={() => removeRole(role)} className="text-white/60 hover:text-white">
+                              <button onClick={() => removeRole(role)} className="text-white/60 hover:text-white transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]">
                                 ×
                               </button>
                             </span>
@@ -259,8 +274,15 @@ export default function OnboardingDialog({ onComplete }) {
 
               {step === 3 && (
                 <div>
-                  <h2 className="text-3xl font-bold text-white mb-2">Your Skills</h2>
-                  <p className="text-gray-300 mb-6">What technical skills do you have? (We pre-filled from resume)</p>
+                  <motion.h2
+                    initial={{ filter: 'blur(10px)', opacity: 0 }}
+                    animate={{ filter: 'blur(0px)', opacity: 1 }}
+                    transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+                    className="text-3xl font-black text-white mb-2 tracking-tighter blur-reveal"
+                  >
+                    Your Skills
+                  </motion.h2>
+                  <p className="text-gray-300 mb-6 blur-reveal" style={{ animationDelay: '0.1s' }}>What technical skills do you have? (We pre-filled from resume)</p>
 
                   <div className="space-y-4">
                     <div>
@@ -270,11 +292,11 @@ export default function OnboardingDialog({ onComplete }) {
                         onChange={e => setSkillInput(e.target.value)}
                         onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addSkill(skillInput))}
                         placeholder="e.g., Python, React, AWS"
-                        className="w-full rounded-lg bg-white/5 border border-white/10 px-4 py-2.5 text-white outline-none focus:border-aqua/50"
+                        className="w-full rounded-lg bg-white/[0.02] border border-white/[0.07] px-4 py-2.5 text-white outline-none focus:border-aqua/50 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
                       />
                       <button
                         onClick={() => addSkill(skillInput)}
-                        className="mt-2 px-4 py-1.5 bg-aqua/20 text-aqua rounded-lg text-sm hover:bg-aqua/30"
+                        className="mt-2 px-4 py-1.5 bg-aqua/20 text-aqua rounded-lg text-sm hover:bg-aqua/30 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
                       >
                         Add Skill
                       </button>
@@ -287,10 +309,10 @@ export default function OnboardingDialog({ onComplete }) {
                           {profile.skills.map(skill => (
                             <span
                               key={skill}
-                              className="px-3 py-1.5 bg-white/10 text-gray-300 rounded-lg text-sm flex items-center gap-2"
+                              className="px-3 py-1.5 bg-white/[0.02] border border-white/[0.07] text-gray-300 rounded-lg text-sm flex items-center gap-2 ease-elastic"
                             >
                               {skill}
-                              <button onClick={() => removeSkill(skill)} className="text-gray-500 hover:text-gray-300">
+                              <button onClick={() => removeSkill(skill)} className="text-gray-500 hover:text-gray-300 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]">
                                 ×
                               </button>
                             </span>
@@ -304,8 +326,15 @@ export default function OnboardingDialog({ onComplete }) {
 
               {step === 4 && (
                 <div>
-                  <h2 className="text-3xl font-bold text-white mb-2">Experience Level</h2>
-                  <p className="text-gray-300 mb-6">Are you a fresher or experienced professional?</p>
+                  <motion.h2
+                    initial={{ filter: 'blur(10px)', opacity: 0 }}
+                    animate={{ filter: 'blur(0px)', opacity: 1 }}
+                    transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+                    className="text-3xl font-black text-white mb-2 tracking-tighter blur-reveal"
+                  >
+                    Experience Level
+                  </motion.h2>
+                  <p className="text-gray-300 mb-6 blur-reveal" style={{ animationDelay: '0.1s' }}>Are you a fresher or experienced professional?</p>
 
                   <div className="grid grid-cols-2 gap-4">
                     {[
@@ -315,10 +344,10 @@ export default function OnboardingDialog({ onComplete }) {
                       <button
                         key={opt.value}
                         onClick={() => setProfile(prev => ({ ...prev, experience_level: opt.value }))}
-                        className={`p-6 rounded-2xl border-2 transition-all ${
+                        className={`p-6 rounded-2xl border-2 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] ${
                           profile.experience_level === opt.value
                             ? 'border-aqua bg-aqua/10'
-                            : 'border-white/10 bg-white/5 hover:border-aqua/30'
+                            : 'border-white/[0.07] bg-white/[0.02] hover:border-aqua/30'
                         }`}
                       >
                         <div className="text-3xl mb-2">{opt.icon}</div>
@@ -337,7 +366,7 @@ export default function OnboardingDialog({ onComplete }) {
             <button
               onClick={() => step > 1 && setStep(step - 1)}
               disabled={step === 1}
-              className="px-6 py-2.5 text-gray-400 hover:text-white disabled:opacity-50"
+              className="px-6 py-2.5 text-gray-400 hover:text-white disabled:opacity-50 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
             >
               Back
             </button>
@@ -348,7 +377,7 @@ export default function OnboardingDialog({ onComplete }) {
                 (step === 1 && !resumeFile && profile.target_roles.length === 0) ||
                 (step === 2 && profile.target_roles.length === 0)
               }
-              className="px-8 py-2.5 bg-gradient-to-r from-nebula to-aqua text-ink font-semibold rounded-full hover:opacity-90 disabled:opacity-50"
+              className="px-8 py-2.5 bg-gradient-to-r from-nebula to-aqua text-ink font-semibold rounded-full hover:opacity-90 disabled:opacity-50 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
             >
               {loading || parsing ? status : step === 4 ? 'Find My Jobs!' : 'Continue'}
             </button>
