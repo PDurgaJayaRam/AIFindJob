@@ -346,6 +346,13 @@ app.include_router(_build_auto_apply_router(get_current_user))
 from admin.router import router as _admin_router
 app.include_router(_admin_router)
 
+# Profile: user preferences + resume meta. PUT /me/preferences enqueues a
+# Celery browser-pool scrape so the fresher-aware filter in
+# BrowserPoolSource picks up the new desired_roles / desired_locations /
+# experience_level without waiting for the 2h beat.
+from profile.router import build_router as _build_profile_router
+app.include_router(_build_profile_router(get_current_user), tags=["profile"])
+
 
 @app.get("/")
 async def root():
@@ -1045,7 +1052,7 @@ async def get_agent_messages():
 
 
 @app.post("/agent/auto-apply/toggle")
-async def toggle_auto_apply(enabled: bool = True):
+async def toggle_auto_apply(enabled: bool = Form(True)):
     """Toggle auto-apply on/off."""
     ai_agent.auto_apply_enabled = enabled
     return {"auto_apply": enabled, "message": f"Auto-apply {'enabled' if enabled else 'disabled'}"}
@@ -1119,7 +1126,7 @@ async def workflow_progress():
 
 
 @app.post("/workflow/analyze")
-async def workflow_analyze(resume_text: str = ""):
+async def workflow_analyze(resume_text: str = Form("")):
     """Analyze existing jobs."""
     try:
         result = await workflow.run_analyze_only(resume_text)

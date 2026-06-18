@@ -46,6 +46,10 @@ export default function Landing() {
               Matches
               <span className="absolute -bottom-1 left-0 w-0 h-px bg-aqua group-hover:w-full transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]" />
             </Link>
+            <Link to="/profile" className="text-gray-300 hover:text-white relative group ease-elastic">
+              Profile
+              <span className="absolute -bottom-1 left-0 w-0 h-px bg-aqua group-hover:w-full transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]" />
+            </Link>
             <Link to="/login" className="glass rounded-full px-6 py-2 hover:border-aqua/40 font-medium ease-elastic">
               Sign in
             </Link>

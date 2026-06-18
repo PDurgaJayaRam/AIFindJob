@@ -1,31 +1,68 @@
 """Ingestion engine: runs all sources with per-source isolation and dedup."""
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import time
 from typing import Iterable
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from database.engine import async_session
 from database.models import Job
 from ingestion.base import BaseIngestionSource, JobRecord, status_store
 from ingestion.sources.remoteok import RemoteOKSource
-from ingestion.sources.arbeitnow import ArbeitnowSource
-from ingestion.sources.adzuna import AdzunaSource
 
 logger = logging.getLogger("ingestion.engine")
 
 
 def default_sources() -> list[BaseIngestionSource]:
-    """RemoteOK + Arbeitnow are free/no-key. Adzuna optional (needs env keys)."""
-    return [RemoteOKSource(), ArbeitnowSource(), AdzunaSource()]
+    """Free, no-rate-limit sources only. Arbeitnow is opt-in (env-gated) because
+    its rate-limit posture is unverified. Adzuna is excluded (paid tier / free
+    tier is rate-limited); the file stays in the tree but is not enabled by
+    default. Greenhouse is added here once its connector lands.
+
+    The 7-portal browser pool is gated by `ENABLE_BROWSER_POOL` (default ON
+    per the user's explicit request). Set `ENABLE_BROWSER_POOL=0` to disable.
+    """
+    sources: list[BaseIngestionSource] = [RemoteOKSource()]
+    if os.getenv("INGEST_INCLUDE_ARBEITNOW", "").lower() in {"1", "true", "yes"}:
+        from ingestion.sources.arbeitnow import ArbeitnowSource
+        sources.append(ArbeitnowSource())
+    if os.getenv("ENABLE_BROWSER_POOL", "1") not in {"0", "false", "no"}:
+        try:
+            from ingestion.sources.browser_pool import BrowserPoolSource
+            sources.append(BrowserPoolSource())
+        except Exception as exc:
+            logger.warning("BrowserPoolSource unavailable, skipping: %s", exc)
+    return sources
 
 
 async def _existing_dedup_keys(records: Iterable[JobRecord]) -> set[str]:
     source_urls = {r.source_url for r in records if r.source_url}
     apply_urls = {r.apply_url for r in records if r.apply_url}
+    id_keys: set[str] = {f"id:{r.source.strip().lower()}:{r.external_id}"
+                         for r in records if r.external_id}
     existing: set[str] = set()
     async with async_session() as session:
+        if id_keys:
+            # Recover the (source, external_id) tuples for any id:key we'd find.
+            # Build a (source, external_id) lookup from the id_keys.
+            id_pairs = set()
+            for k in id_keys:
+                # k = "id:{source}:{external_id}"
+                _, src, ext = k.split(":", 2)
+                id_pairs.add((src, ext))
+            for src, ext in id_pairs:
+                rows = await session.execute(
+                    select(Job.id).where(
+                        (Job.source == src) & (Job.external_id == ext)
+                    ).limit(1)
+                )
+                if rows.scalars().first() is not None:
+                    existing.add(f"id:{src}:{ext}")
         if source_urls:
             rows = await session.execute(
                 select(Job.source_url).where(Job.source_url.in_(source_urls))
@@ -69,13 +106,24 @@ async def _persist(records: list[JobRecord]) -> int:
                     apply_url=rec.apply_url,
                     source=rec.source[:100],
                     source_url=rec.source_url,
+                    external_id=rec.external_id or None,
                     remote=rec.remote,
                     posted_date=rec.posted_date,
                     ai_analysis={},
                 )
             )
             new_count += 1
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError as exc:
+            # A race slipped past the in-Python check. Roll back the whole
+            # batch and re-attempt with the conflict rows skipped. For now
+            # we just log and return 0 — the next beat tick will retry the
+            # survivors, and the surviving unique keys will block the dups.
+            await session.rollback()
+            logger.warning("IntegrityError on commit; %d candidates lost this tick: %s",
+                           new_count, exc.orig)
+            return 0
     return new_count
 
 
@@ -86,10 +134,32 @@ async def run_source(source: BaseIngestionSource) -> dict:
         status_store.record(
             source.name, ok=True, jobs_fetched=len(records), jobs_new=new_count
         )
+        # Broadcast to SSE clients
+        try:
+            from admin.router import broadcast_scraper_event
+            broadcast_scraper_event({
+                "type": "source_complete",
+                "source": source.name,
+                "jobs_fetched": len(records),
+                "jobs_new": new_count,
+                "timestamp": time.time()
+            })
+        except ImportError:
+            pass
         logger.info("Source %s: fetched=%d new=%d", source.name, len(records), new_count)
         return {"source": source.name, "fetched": len(records), "new": new_count}
     except Exception as exc:
         status_store.record(source.name, ok=False, error=str(exc)[:500])
+        try:
+            from admin.router import broadcast_scraper_event
+            broadcast_scraper_event({
+                "type": "source_error",
+                "source": source.name,
+                "error": str(exc)[:200],
+                "timestamp": time.time()
+            })
+        except ImportError:
+            pass
         logger.error("Source %s failed: %s", source.name, exc)
         return {"source": source.name, "error": str(exc)}
 
@@ -100,3 +170,52 @@ async def run_all_sources(sources: list[BaseIngestionSource] | None = None) -> l
     for source in sources:
         results.append(await run_source(source))
     return results
+
+
+async def run_browser_pool_source(
+    query=None,
+    location=None,
+    experience_level=None,
+) -> list[dict]:
+    """Run only the browser-pool source and persist its jobs. Updates
+    per-portal browser_pool_status_store.jobs_new after persist so the
+    admin aggregator can surface fresh counts.
+
+    Used by `workers.tasks_browser.run_browser_scrape_task` (Celery beat
+    every 2 hours), by the /admin/trigger/browser-pool "Run now" button,
+    and by `profile.router.put_preferences` when a user saves their
+    preferences.
+
+    Args:
+        query: Role keyword (e.g. "Data Analyst"). None → env default.
+        location: City (e.g. "Hyderabad"). None → env default.
+        experience_level: "fresher" | "junior" | "mid" | "senior" | None.
+            None or "mid"/"senior" → no query prepend. "fresher"/"junior"
+            → BrowserPoolSource prepends to the query for fresher-aware
+            filtering. Per-portal URL-param mapping is deferred.
+    """
+    from ingestion.browser_pool_status import browser_pool_status_store
+    from ingestion.sources.browser_pool import BrowserPoolSource
+
+    source = BrowserPoolSource(
+        query=query,
+        location=location,
+        experience_level=experience_level,
+    )
+    try:
+        records = await source.fetch()
+    except Exception as exc:
+        logger.exception("Browser pool fetch failed: %s", exc)
+        return [{"source": source.name, "error": str(exc)[:500]}]
+    new_count = await _persist(records)
+    # Update per-portal jobs_new by attributing evenly across portals that ran.
+    portals_in_batch = {r.source for r in records}
+    if portals_in_batch and new_count and len(portals_in_batch):
+        per_portal = max(1, new_count // len(portals_in_batch))
+        for p in portals_in_batch:
+            s = browser_pool_status_store.get(p)
+            if s:
+                s["jobs_new"] = per_portal
+    status_store.record(source.name, ok=True, jobs_fetched=len(records), jobs_new=new_count)
+    logger.info("Browser pool: fetched=%d new=%d", len(records), new_count)
+    return [{"source": source.name, "fetched": len(records), "new": new_count}]
