@@ -93,6 +93,7 @@ export default function Jobs() {
         </Link>
         <div className="flex gap-4 text-sm">
           <Link to="/" className="text-gray-300 hover:text-white ease-elastic">Home</Link>
+          <Link to="/profile" className="text-gray-300 hover:text-white ease-elastic">Profile</Link>
           {profile ? (
             <>
               <button

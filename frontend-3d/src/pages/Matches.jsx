@@ -175,6 +175,7 @@ export default function Matches() {
           </Link>
           <div className="flex gap-4 text-sm items-center">
             <Link to="/jobs" className="text-gray-300 hover:text-white ease-elastic">All jobs</Link>
+            <Link to="/profile" className="text-gray-300 hover:text-white ease-elastic">Profile</Link>
             <Link to="/admin" className="text-gray-300 hover:text-white ease-elastic">Admin</Link>
             {profile ? (
               <>

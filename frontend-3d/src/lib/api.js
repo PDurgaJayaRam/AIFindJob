@@ -115,6 +115,24 @@ export function saveUserProfile(profile) {
   });
 }
 
+// Profile preferences (Phase 7: fresher-aware scrape re-trigger).
+// `request` auto-stringifies the body and sets Content-Type, so we pass
+// the plain object — matches the `saveUserProfile` style above.
+export function fetchMyPreferences() {
+  return request('/me/preferences', { method: 'GET' });
+}
+
+export function updateMyPreferences(prefs) {
+  return request('/me/preferences', { method: 'PUT', body: prefs });
+}
+
+export function updateResumeMeta({ experience_years, skills }) {
+  return request('/me/resume-meta', {
+    method: 'PUT',
+    body: { experience_years, skills },
+  });
+}
+
 export function generateResume(jobId) {
   return request(`/me/jobs/${jobId}/resume`, { method: 'POST' });
 }
@@ -155,4 +173,14 @@ export function runLiveScraperDemo() {
 
 export function seedDemoJobs() {
   return request('/live-scraper/seed-demo-jobs', { method: 'POST' });
+}
+
+export function adminLogin(email, password) {
+  // Backend /admin/login reads Form(...) fields. Send as URL-encoded form body
+  // (not JSON) — matches the FastAPI Form(...) signature.
+  return request('/admin/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ email, password }).toString(),
+  });
 }
