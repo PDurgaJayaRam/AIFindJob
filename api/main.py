@@ -795,6 +795,35 @@ async def _run_continuous_scrape_async():
                                     return '';
                                 }""")
 
+                                experience_el = await page.evaluate("""() => {
+                                    const text = document.body?.innerText || '';
+                                    const patterns = [
+                                        /(\d+[\+]?\s*(?:to|-)\s*\d+\s*years?)/i,
+                                        /(\d+\s*years?\s*(?:of\s*)?experience)/i,
+                                        /(fresher|entry.?level|junior|senior|lead|principal)/i,
+                                        /(experience:\s*\d+)/i
+                                    ];
+                                    for (const p of patterns) {
+                                        const m = text.match(p);
+                                        if (m) return m[0].substring(0, 100);
+                                    }
+                                    return '';
+                                }""")
+
+                                salary_el = await page.evaluate("""() => {
+                                    const text = document.body?.innerText || '';
+                                    const patterns = [
+                                        /(₹|INR|Rs\.?|USD|\$|€|£)\s*[\d,]+[\s\-to]+[\d,]+/i,
+                                        /(\d+[\-to]+\d+)\s*(?:LPA|lakhs?|per annum|annual|monthly)/i,
+                                        /salary:\s*[\d,]+/i
+                                    ];
+                                    for (const p of patterns) {
+                                        const m = text.match(p);
+                                        if (m) return m[0].substring(0, 100);
+                                    }
+                                    return '';
+                                }""")
+
                                 skills = await page.evaluate("""() => {
                                     const text = document.body?.innerText || '';
                                     const techSkills = ['python', 'java', 'javascript', 'typescript', 'react', 'angular',
@@ -822,6 +851,8 @@ async def _run_continuous_scrape_async():
                                     source_url=detail_url,
                                     apply_url=detail_url,
                                     external_id=detail_url,
+                                    salary=salary_el[:500] if salary_el else "",
+                                    experience_required=experience_el[:500] if experience_el else "",
                                     skills_required=skills,
                                     remote="remote" in job.get("title", "").lower() or "remote" in job.get("location", "").lower(),
                                 )
