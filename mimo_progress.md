@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-22
 **Branch:** harshith-dev
-**Commits:** 3 (a30205d, fcd4f6a, e0e2fba)
+**Commits:** 7 (a30205d, fcd4f6a, e0e2fba, ac2c98a, 41c8ebf, d30a183, 178859c)
 
 ---
 
@@ -74,7 +74,7 @@ Built a 4-agent system inspired by Claude Resume methodology:
 
 **Fixed:**
 - Changed Vite proxy from catch-all `/admin` to specific API paths
-- Added missing proxy rules: `/chat`, `/company-research`, `/find-people`, `/scheduler`
+- Added missing proxy rules: `/chat`, `/company-research`, `/find-people`, `/scheduler`, `/social`
 
 **File modified:** `frontend-3d/vite.config.js`
 
@@ -128,6 +128,48 @@ POST /social/research-company
 POST /social/monitor-market
 ```
 
+### 9. Job Data Enrichment
+
+**Problem:** Jobs had missing company names, descriptions, experience, salary
+
+**Fixed:**
+- Created `enrich_jobs.py` to visit detail pages and fill missing data
+- Continuous scraper now extracts experience and salary from detail pages
+- Updated 43 jobs with missing data
+- Added `_is_fresher_friendly()` filter to exclude jobs requiring >1 year experience
+
+**Files created:**
+- `enrich_jobs.py` — Script to enrich existing jobs with missing data
+- `export_jobs.py` — Export jobs to CSV and HTML (Google Sheets style)
+
+**Files modified:**
+- `api/main.py` — Added experience/salary extraction and fresher filtering
+
+### 10. Scraper Uses User's Selected Roles
+
+**Problem:** Scraper only searched for "java" jobs, ignoring user's selected roles
+
+**Fixed:**
+- Scraper now fetches `desired_roles` from user preferences
+- Uses ALL selected roles for searching (Junior Software Developer, Python Developer, etc.)
+- Added fresher filtering: excludes jobs with "senior", "lead", "10+ years", etc.
+- Naukri URL includes `?experience=0` for fresher jobs
+
+**File modified:** `api/main.py`
+
+### 11. Matches Page Sorting
+
+**Problem:** Jobs on /matches page weren't sorted by date
+
+**Fixed:**
+- Added `created_at` to job data returned to frontend
+- Ranking now sorts by score first, then by date (newest first)
+- New scraped jobs appear at top of /matches page
+
+**Files modified:**
+- `matching/router.py` — Added created_at to job data
+- `matching/scorer.py` — Sort by score then date
+
 ---
 
 ## Architecture Overview
@@ -136,8 +178,10 @@ POST /social/monitor-market
 ┌─────────────────────────────────────────────────────────────┐
 │                    INGESTION ENGINE (24/7)                    │
 │  RemoteOK + Arbeitnow + Browser Pool + Social Intel          │
+│  (Uses user's selected roles + fresher filtering)            │
 │                          ↓                                   │
 │                    SQLite Database                            │
+│                    (Enriched with full data)                  │
 └──────────────────────────┬──────────────────────────────────┘
                            │
           ┌────────────────┼────────────────┐
@@ -145,9 +189,22 @@ POST /social/monitor-market
    ┌──────────┐    ┌──────────┐    ┌──────────┐
    │ Matching │    │ Resume   │    │ People   │
    │ Engine   │    │ Builder  │    │ Finder   │
-   │          │    │ (4-Agent)│    │          │
+   │ (sorted  │    │ (4-Agent)│    │ (real    │
+   │  by date)│    │          │    │ contacts)│
    └──────────┘    └──────────┘    └──────────┘
 ```
+
+---
+
+## Data Quality
+
+| Field | Before | After |
+|-------|--------|-------|
+| Company names | 190 missing | Fixed via enrichment |
+| Descriptions | 175 < 50 chars | Fixed via enrichment |
+| Locations | 209 missing | Fixed via enrichment |
+| Experience | 1028 missing | Now extracted during scraping |
+| Salary | 867 missing | Now extracted during scraping |
 
 ---
 
@@ -161,10 +218,33 @@ POST /social/monitor-market
 
 ---
 
+## Export Files
+
+- **CSV:** `data/exports/jobs_export_YYYYMMDD_HHMMSS.csv`
+- **HTML:** `data/exports/jobs_export_YYYYMMDD_HHMMSS.html` (Google Sheets style viewer)
+
+---
+
 ## Git History
 
 ```
+178859c fix: sort matches by date (newest first) then by score
+d30a183 fix: scraper now uses user's selected roles + fresher filtering
+41c8ebf feat: enrich job data + extract experience/salary during scraping
+ac2c98a docs: add session progress summary
 e0e2fba fix: people finder now only shows real contacts
 fcd4f6a feat: social intel integration + show all contacts/skills
 a30205d feat: multi-agent resume builder, continuous scraper, portal fixes
 ```
+
+---
+
+## How to Use
+
+1. **Start backend:** `python run_dev.py`
+2. **Register/Login:** Select your desired roles and experience level
+3. **Upload resume:** System parses your skills and experience
+4. **View matches:** Jobs sorted by relevance + date (newest first)
+5. **Generate resume:** 4-agent pipeline creates ATS-optimized resume
+6. **Find contacts:** Real emails from company websites
+7. **Export jobs:** Run `python export_jobs.py` for CSV/HTML view
