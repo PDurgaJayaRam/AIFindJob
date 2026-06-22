@@ -26,6 +26,7 @@ def default_sources() -> list[BaseIngestionSource]:
     
     Environment:
     - ENABLE_BROWSER_POOL=1 (default) - enables browser pool
+    - ENABLE_SOCIAL_INTEL=1 (default) - enables social media job monitoring
     - SCRAPE_PORTALS - which portals to run (default: all)
     """
     sources: list[BaseIngestionSource] = [RemoteOKSource()]
@@ -35,10 +36,15 @@ def default_sources() -> list[BaseIngestionSource]:
     if os.getenv("ENABLE_BROWSER_POOL", "1") not in {"0", "false", "no"}:
         try:
             from ingestion.sources.browser_pool import BrowserPoolSource
-            # BrowserPoolSource scrapes ALL portals in its fetch() method
             sources.append(BrowserPoolSource())
         except Exception as exc:
             logger.warning("BrowserPoolSource unavailable, skipping: %s", exc)
+    if os.getenv("ENABLE_SOCIAL_INTEL", "1") not in {"0", "false", "no"}:
+        try:
+            from ingestion.sources.social_intel import SocialIntelSource
+            sources.append(SocialIntelSource())
+        except Exception as exc:
+            logger.warning("SocialIntelSource unavailable, skipping: %s", exc)
     return sources
 
 

@@ -7,6 +7,8 @@ export default function JobCard({ job, index = 0 }) {
   const [generating, setGenerating] = useState(false);
   const [findingContacts, setFindingContacts] = useState(false);
   const [resumeUrl, setResumeUrl] = useState(null);
+  const [contacts, setContacts] = useState(null);
+  const [showContacts, setShowContacts] = useState(false);
 
   const skills = Array.isArray(job.skills_required) ? job.skills_required.slice(0, 6) : [];
   const matchScore = job.match?.score ?? job.ats_score ?? 0;
@@ -33,7 +35,35 @@ export default function JobCard({ job, index = 0 }) {
       const data = await (await import('../lib/api.js')).generateResume(job.id);
       console.log('Resume response:', data);
       setResumeUrl(data.download_url);
-      window.open(data.download_url, '_blank');
+      
+      // Use fetch to download since window.open won't include auth header
+      // The download URL works with auth header or returns the file directly
+      const response = await fetch(data.download_url, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      if (!response.ok) {
+        throw new Error(`${response.status} ${await response.text()}`);
+      }
+      const blob = await response.blob();
+      
+      // Determine file extension based on content type
+      const contentType = response.headers.get('content-type') || '';
+      const isPDF = contentType.includes('pdf') || data.pdf_available;
+      const fileExt = isPDF ? 'pdf' : 'docx';
+      
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `tailored_resume_${job.id}.${fileExt}`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      
+      // Show success message
+      alert(`Resume generated successfully! (${isPDF ? 'PDF' : 'DOCX'} format)\nPreview: ${data.preview?.substring(0, 150)}...`);
     } catch (err) {
       console.error('Resume error:', err);
       if (err.message.includes('401')) {
@@ -61,8 +91,8 @@ export default function JobCard({ job, index = 0 }) {
     setFindingContacts(true);
     try {
       const data = await (await import('../lib/api.js')).findContacts(job.id);
-      alert(`Found ${data.contacts?.length || 0} contacts! Check console for details.`);
-      console.log('Contacts:', data);
+      setContacts(data);
+      setShowContacts(true);
     } catch (err) {
       if (err.message.includes('401')) {
         if (confirm('Authentication required. Please sign in again?')) {
@@ -120,9 +150,63 @@ export default function JobCard({ job, index = 0 }) {
         </div>
       )}
 
-      {/* Action buttons - appear on hover */}
+      {/* Contacts Display */}
+      {showContacts && (
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mt-3 p-3 bg-white/[0.02] border border-white/[0.07] rounded-lg"
+        >
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-aqua text-xs font-medium">
+              👥 {contacts?.contacts?.length > 0 ? `${contacts.contacts.length} contacts found` : 'No contacts found'}
+            </p>
+            <button
+              onClick={() => setShowContacts(false)}
+              className="text-gray-500 text-xs hover:text-gray-300"
+            >
+              ✕
+            </button>
+          </div>
+          {contacts?.contacts?.length > 0 ? (
+            <div className="space-y-1.5 max-h-96 overflow-y-auto">
+              {contacts.contacts.map((contact, idx) => (
+                <div key={idx} className="text-xs">
+                  <span className="text-gray-400">{contact.name || 'Unknown'}:</span>
+                  <span className="text-nebula ml-1 font-mono">{contact.email}</span>
+                  <span className={`ml-2 text-[10px] px-1.5 py-0.5 rounded ${
+                    contact.confidence >= 0.5 ? 'bg-green-500/20 text-green-300' : 'bg-amber-500/20 text-amber-300'
+                  }`}>
+                    {Math.round(contact.confidence * 100)}%
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[10px] text-gray-500">
+              Inferred emails are guesses. Verify before sending.
+            </p>
+          )}
+        </motion.div>
+      )}
+
+      {/* Missing Skills / Learning Recommendations */}
+      {job.match?.missing_skills?.length > 0 && (
+        <div className="mt-3 p-3 bg-amber-500/5 border border-amber-500/20 rounded-lg">
+          <p className="text-amber-300 text-xs font-medium mb-1.5">🔍 Skills to Learn:</p>
+          <div className="flex flex-wrap gap-1">
+            {job.match.missing_skills.map((s) => (
+              <span key={s} className="text-xs text-amber-400/80 bg-amber-500/10 rounded px-1.5 py-0.5 ease-elastic">
+                {s}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Action buttons - appear on hover - always show Resume and Contacts buttons */}
       <AnimatePresence>
-        {showActions && matchScore > 0 && (
+        {showActions && (
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
@@ -138,7 +222,7 @@ export default function JobCard({ job, index = 0 }) {
             </button>
             <button
               onClick={handleFindContacts}
-              disabled={findingContacts}
+              disabled={findingContacts || generating}
               className="flex-1 px-3 py-1.5 bg-white/[0.02] border border-white/[0.07] text-gray-300 rounded-lg text-xs font-medium hover:bg-white/[0.04] transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
             >
               {findingContacts ? 'Finding...' : '👥 Contacts'}

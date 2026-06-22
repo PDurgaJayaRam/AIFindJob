@@ -369,6 +369,10 @@ app.include_router(_admin_router)
 from profile.router import build_router as _build_profile_router
 app.include_router(_build_profile_router(get_current_user), tags=["profile"])
 
+# Social Intelligence: Twitter, Reddit, LinkedIn, GitHub job monitoring
+from social_intel.router import build_router as _build_social_router
+app.include_router(_build_social_router(get_current_user))
+
 
 @app.get("/")
 async def root():
