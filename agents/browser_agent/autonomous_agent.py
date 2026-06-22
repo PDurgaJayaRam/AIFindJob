@@ -503,13 +503,17 @@ Respond with ONLY a JSON object:
             self._log("DOM pagination failed, trying vision...")
             try:
                 import os
-                mistral_key = os.getenv("MISTRAL_API_KEY")
-                if not mistral_key:
-                    self._log("No MISTRAL_API_KEY, stopping pagination")
+                has_mistral = os.getenv("MISTRAL_API_KEY")
+                has_nvidia = os.getenv("NVIDIA_API_KEY")
+                
+                if not has_mistral and not has_nvidia:
+                    self._log("No MISTRAL_API_KEY or NVIDIA_API_KEY, stopping pagination")
                     break
-
+                
                 from agents.vision_scraper.ui_tars_agent import UITarsAgent
-                agent = UITarsAgent(self.browser, mistral_key, max_steps=2)
+                # Prefer NVIDIA for vision if Mistral isn't available
+                vision_key = has_mistral or has_nvidia
+                agent = UITarsAgent(self.browser, vision_key, max_steps=2)
                 result = await agent.run(
                     "Look at the page. If there is a 'Next' button, 'Load More' button, or pagination links "
                     "(like page numbers 2, 3, etc.), click the Next button or page 2 link to go to the next page. "
@@ -902,6 +906,9 @@ Respond with ONLY a JSON object:
             listing_jobs = await self._paginate_and_extract(portal, max_pages=3)
             self._log(f"DOM extraction: {len(listing_jobs)} jobs from {portal}")
 
+            dom_detail_visits = 0
+            max_dom_detail_visits = 15  # Limit to prevent hanging on detail pages
+
             for job in listing_jobs:
                 if len(all_portal_jobs) >= remaining:
                     break
@@ -922,10 +929,20 @@ Respond with ONLY a JSON object:
                         job["description"] = ""
                         has_desc = False
 
-                if not has_desc and job_url:
+                # Limit detail page visits to prevent timeout
+                if not has_desc and job_url and dom_detail_visits < max_dom_detail_visits:
+                    dom_detail_visits += 1
                     # Random delay between detail page visits to avoid anti-bot detection
                     await asyncio.sleep(random.uniform(1.5, 3.5))
-                    detailed = await self._open_job_and_extract(job_url)
+                    try:
+                        # Add timeout to prevent hanging on slow detail pages
+                        detailed = await asyncio.wait_for(
+                            self._open_job_and_extract(job_url),
+                            timeout=45  # 45 second timeout per detail page
+                        )
+                    except asyncio.TimeoutError:
+                        self._log(f"Detail page timeout for {job_url[:50]}...")
+                        detailed = {}
                     # Close any extra tabs opened by the detail page
                     try:
                         await self.browser.close_extra_tabs()
@@ -1279,13 +1296,17 @@ Respond with ONLY a JSON object:
         # Page looks broken or no results visible — try vision model (popup close only)
         try:
             import os
-            mistral_key = os.getenv("MISTRAL_API_KEY")
-            if not mistral_key:
-                self._log("No MISTRAL_API_KEY, can't use vision fallback")
+            has_mistral = os.getenv("MISTRAL_API_KEY")
+            has_nvidia = os.getenv("NVIDIA_API_KEY")
+            
+            if not has_mistral and not has_nvidia:
+                self._log("No MISTRAL_API_KEY or NVIDIA_API_KEY, can't use vision fallback")
                 return False
 
             from agents.vision_scraper.ui_tars_agent import UITarsAgent
-            agent = UITarsAgent(self.browser, mistral_key, max_steps=3)
+            # Prefer NVIDIA for vision if Mistral isn't available
+            vision_key = has_mistral or has_nvidia
+            agent = UITarsAgent(self.browser, vision_key, max_steps=3)
 
             task = "If you see a popup or overlay blocking the page, close it. If job listings are visible, say finished."
 

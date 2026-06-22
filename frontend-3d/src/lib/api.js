@@ -172,7 +172,9 @@ export function runLiveScraperDemo() {
 }
 
 export function seedDemoJobs() {
-  return request('/live-scraper/seed-demo-jobs', { method: 'POST' });
+  // Demo jobs have been removed - only real scraped jobs are now available
+  // This endpoint is no longer available
+  return Promise.resolve({ message: 'Demo mode disabled - only real jobs are shown' });
 }
 
 export function adminLogin(email, password) {
@@ -182,5 +184,22 @@ export function adminLogin(email, password) {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ email, password }).toString(),
+  });
+}
+
+export function triggerAllPortalsScrape(query, location) {
+  return request('/admin/scrape/all-portals', {
+    method: 'POST',
+    body: { query, location },
+  });
+}
+
+export function getPortalStatus() {
+  return request('/admin/portals/status');
+}
+
+export function triggerSpecificPortal(portalName) {
+  return request(`/admin/scrape/trigger/${portalName}`, {
+    method: 'POST',
   });
 }

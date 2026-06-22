@@ -18,9 +18,14 @@ logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
+# Ensure project root is in path for subprocess imports
+from pathlib import Path
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 import csv
 import io
-from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any, Optional
 
@@ -101,18 +106,28 @@ async def lifespan(app: FastAPI):
     
     scheduler = AsyncIOScheduler()
     
-    # Configurable interval: set SCRAPE_INTERVAL_MINUTES env var (default: 5)
-    scrape_interval = int(os.getenv("SCRAPE_INTERVAL_MINUTES", "5"))
+    # Configurable interval: set SCRAPE_INTERVAL_MINUTES env var (default: 1)
+    scrape_interval = int(os.getenv("SCRAPE_INTERVAL_MINUTES", "1"))
     
     async def continuous_scrape_job():
-        """Background job: ingest jobs from all sources into the central pool."""
+        """Background job: scrape ALL portals continuously.
+        
+        EVERY portal runs in rotation to ensure comprehensive coverage.
+        No portal sleeps - all are active.
+        """
         import logging
         logger = logging.getLogger("scheduler")
-        logger.info("Running scheduled global ingestion...")
+        logger.info("Running scheduled global ingestion (all portals)...")
         
         try:
+            # Run all sources - this hits ALL enabled portals
+            # Add timeout wrapper to prevent hanging
             from ingestion.engine import run_all_sources
-            results = await run_all_sources()
+            try:
+                results = await asyncio.wait_for(run_all_sources(), timeout=600)  # 10 minute timeout
+            except asyncio.TimeoutError:
+                logger.warning("Scraping timed out after 10 minutes - some portals may not have completed")
+                return
             total_new = sum(r.get("new", 0) for r in results)
             logger.info(f"Scheduled ingestion complete: {results}, total_new={total_new}")
         except Exception as e:
@@ -124,12 +139,13 @@ async def lifespan(app: FastAPI):
         id="continuous_scrape",
         name=f"Continuous job scrape every {scrape_interval} minutes",
         replace_existing=True,
+        max_instances=1,  # Prevent overlapping runs
     )
     scheduler.start()
     logger.info(f"Background scheduler started - scraping every {scrape_interval} minutes")
-    
+
     yield
-    
+
     # Shutdown
     scheduler.shutdown()
 
@@ -385,8 +401,8 @@ async def scheduler_status():
     return {
         "status": "active",
         "scheduler": "APScheduler",
-        "interval_minutes": 30,
-        "description": "Jobs are scraped automatically every 30 minutes for all active users",
+        "interval_minutes": 1,
+        "description": "Jobs are scraped automatically every 1 minute for all active users",
     }
 
 
@@ -437,69 +453,37 @@ async def trigger_scrape(user=Depends(get_current_user)):
 
 # === LIVE SCRAPER MONITOR ===
 
-@app.post("/live-scraper/seed-demo-jobs")
-async def seed_demo_jobs(background_tasks: BackgroundTasks):
-    """Seed demo jobs for testing matching (India tech jobs)."""
-    from database.engine import async_session
-    from database.models import Job
-    
-    demo_jobs = [
-        {"title": "Junior Java Developer", "company": "TCS", "location": "Hyderabad", 
-         "skills": ["Java", "SQL", "Spring"], "desc": "Entry level Java developer position. 0-2 years experience required."},
-        {"title": "Python Django Developer", "company": "Infosys", "location": "Bangalore", 
-         "skills": ["Python", "Django", "SQL"], "desc": "Python backend developer with Django framework."},
-        {"title": "C# .NET Developer - Fresher", "company": "Wipro", "location": "Hyderabad", 
-         "skills": ["C#", ".NET", "SQL Server"], "desc": "Fresher C# developer position. Entry level job."},
-        {"title": "Software Engineer - Java", "company": "Accenture", "location": "Gurgaon", 
-         "skills": ["Java", "Microservices", "Spring Boot"], "desc": "Java software engineer for enterprise applications."},
-        {"title": "Junior Python Developer - Fresher", "company": "HCL Technologies", "location": "Noida", 
-         "skills": ["Python", "Flask", "REST API"], "desc": "Python internship for freshers. Entry level position."},
-        {"title": "Backend Developer - Node.js", "company": "Tech Mahindra", "location": "Pune", 
-         "skills": ["Node.js", "JavaScript", "MongoDB"], "desc": "Node.js backend developer with 1-3 years experience."},
-    ]
-    
-    async def seed():
-        async with async_session() as session:
-            for job in demo_jobs:
-                session.add(Job(
-                    user_id=None,
-                    title=job["title"],
-                    company=job["company"],
-                    location=job["location"],
-                    skills_required=job["skills"],
-                    description=job["desc"],
-                    source="demo-data",
-                    source_url=f"https://demo.com/jobs/{job['title'].replace(' ', '-').lower()}",
-                    remote=False,
-                    fresher_friendly=True,
-                ))
-            await session.commit()
-    
-    background_tasks.add_task(seed)
-    return {"status": "seeding", "message": f"Adding {len(demo_jobs)} demo tech jobs to pool..."}
+_live_scraper_running = False
 
 
 @app.get("/live-scraper/status")
 async def live_scraper_status():
     """Get current live scraping status, screenshot, and activity log."""
     from agents.browser_agent.live_monitor import live_monitor
-    return live_monitor.get_status()
+    status = live_monitor.get_status()
+    status["is_running"] = _live_scraper_running
+    return status
 
 
 @app.post("/live-scraper/start")
 async def live_scraper_start(background_tasks: BackgroundTasks):
     """Start a live scraping session with monitoring."""
+    global _live_scraper_running
+    if _live_scraper_running:
+        return {"status": "already_running", "message": "Live scraper is already running"}
     from agents.browser_agent.live_monitor import live_monitor
     live_monitor.start_session()
-    
-    # Trigger actual scraping in background with default keywords
-    background_tasks.add_task(_run_demo_sync, "Python", "Hyderabad")
-    return {"status": "started", "message": "Live scraper session started - watching portals..."}
+    _live_scraper_running = True
+
+    background_tasks.add_task(_run_continuous_scrape_sync)
+    return {"status": "started", "message": "Live scraper started - scraping all portals continuously..."}
 
 
 @app.post("/live-scraper/stop")
 async def live_scraper_stop():
     """Stop the current live scraping session."""
+    global _live_scraper_running
+    _live_scraper_running = False
     from agents.browser_agent.live_monitor import live_monitor
     live_monitor.stop_session()
     return {"status": "stopped", "message": "Live scraper session stopped"}
@@ -507,139 +491,408 @@ async def live_scraper_stop():
 
 @app.post("/live-scraper/demo")
 async def live_scraper_demo(background_tasks: BackgroundTasks):
-    """
-    Demo mode: open a browser, navigate through several job portals,
-    and capture screenshots so you can see the live view working immediately.
-    """
+    """Demo mode: one-shot scrape of all portals."""
+    global _live_scraper_running
+    if _live_scraper_running:
+        return {"status": "already_running", "message": "Live scraper is already running"}
     from agents.browser_agent.live_monitor import live_monitor
     live_monitor.start_session()
-    background_tasks.add_task(_run_demo_sync)
+    _live_scraper_running = True
+    background_tasks.add_task(_run_continuous_scrape_sync)
     return {"status": "demo_started", "message": "Demo is running. Watch the live page for screenshots."}
 
 
-def _run_demo_sync(keywords: str = "Python", location: str = "Hyderabad"):
+def _run_continuous_scrape_sync():
     """Sync wrapper that creates its own event loop with the right policy (Windows)."""
     import asyncio
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    asyncio.run(_run_demo_async(keywords, location))
+    asyncio.run(_run_continuous_scrape_async())
 
 
-async def _run_demo_async(keywords: str = "Python", location: str = "Hyderabad"):
-    """Background task that runs live scraping with real job extraction."""
+async def _run_continuous_scrape_async():
+    """Background task that runs LIVE scraping continuously across all portals.
+
+    Loops forever (until _live_scraper_running is set to False).
+    Each cycle scrapes all portals, visits detail pages for descriptions,
+    saves to database via ingestion engine, waits 60 seconds, then repeats.
+    """
+    global _live_scraper_running
     import traceback
     from agents.browser_agent.live_monitor import live_monitor
+    from ingestion.engine import _persist
+    from ingestion.base import JobRecord
+    import os
 
-    browser = None
-    try:
-        from playwright.async_api import async_playwright
-        from agents.browser_agent.browser_controller import BrowserController
-        import os
+    keywords = os.getenv("SCRAPE_QUERY", "python java sql developer")
+    location = os.getenv("SCRAPE_LOCATION", "Hyderabad")
+    cycle_count = 0
+    total_saved = 0
+    seen_urls = set()
 
-        headless = os.getenv("PLAYWRIGHT_HEADLESS", "false").lower() == "true"
-        
-        live_monitor.update_status(portal="Browser", action="Launching browser...")
-        
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=headless,
-                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"]
-            )
-            context = await browser.new_context(
-                viewport={"width": 1280, "height": 800},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            )
-            page = await context.new_page()
+    def _normalize(text):
+        return " ".join(text.lower().strip().split()) if text else ""
 
-            portals = [
-                ("naukri", f"https://www.naukri.com/{keywords.replace(' ', '-')}-jobs-in-{location.lower().replace(' ', '-')}"),
-                ("indeed", f"https://www.indeed.com/jobs?q={keywords}&l={location}"),
-                ("linkedin", f"https://www.linkedin.com/jobs/search/?keywords={keywords.replace(' ', '%20')}&location={location}"),
-            ]
+    def _job_key(title, company, source):
+        return f"{_normalize(title)}|{_normalize(company)}|{_normalize(source)}"
 
-            all_jobs = []
-            for portal_name, url in portals:
-                if not live_monitor.is_running:
-                    break
+    while _live_scraper_running:
+        cycle_count += 1
+        browser = None
+        all_records = []
 
-                try:
-                    live_monitor.update_status(portal=portal_name, url=url, action=f"Searching {portal_name}...")
-                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                    await asyncio.sleep(3)  # Wait for page to load
-
-                    # Take screenshot
-                    ss_bytes = await page.screenshot(type="jpeg", full_page=False, quality=60)
-                    live_monitor.set_screenshot(screenshot_bytes=ss_bytes)
-                    live_monitor.update_status(portal=portal_name, action=f"Extracting jobs from {portal_name}...")
-
-                    # Extract jobs using JavaScript
-                    if portal_name == "naukri":
-                        jobs = await page.evaluate("""() => {
-                            const jobs = [];
-                            document.querySelectorAll('a[href*="/job-listings-"]').forEach(a => {
-                                const href = a.href;
-                                const title = a.innerText?.trim() || '';
-                                if (href && title.length > 5 && title.length < 150) {
-                                    const lines = (a.closest('div')?.innerText || '').split('\\n').filter(l => l.trim());
-                                    jobs.push({
-                                        title,
-                                        company: lines.find(l => /^[A-Z]/.test(l)) || 'Unknown',
-                                        location: lines.find(l => /hyderabad|bangalore|chennai|mumbai/i.test(l)) || 'Unknown',
-                                        source_url: href
-                                    });
-                                }
-                            });
-                            return jobs.slice(0, 10);
-                        }""")
-                    elif portal_name == "indeed":
-                        jobs = await page.evaluate("""() => {
-                            const jobs = [];
-                            document.querySelectorAll('a[href*="/viewjob"], a[data-jk]').forEach(a => {
-                                const href = a.href;
-                                const title = a.querySelector('h2')?.innerText || a.innerText?.trim() || '';
-                                if (href && title.length > 5) {
-                                    jobs.push({
-                                        title,
-                                        company: a.querySelector('[data-company]')?.innerText || 'Unknown',
-                                        location: a.querySelector('[data-location]')?.innerText || 'Unknown',
-                                        source_url: href
-                                    });
-                                }
-                            });
-                            return jobs.slice(0, 10);
-                        }""")
-                    else:
-                        jobs = []
-
-                    for job in jobs:
-                        live_monitor.add_job({
-                            "title": job.get("title", "Unknown"),
-                            "company": job.get("company", "Unknown"),
-                            "location": job.get("location", "Unknown"),
-                            "portal": portal_name
-                        })
-                    all_jobs.extend(jobs)
-
-                    live_monitor.update_status(portal=portal_name, action=f"Found {len(jobs)} jobs - visiting next portal")
-                    await asyncio.sleep(2)
-
-                except Exception as e:
-                    err = str(e)[:100]
-                    live_monitor.add_error(f"{portal_name}: {err}")
-                    live_monitor.update_status(portal=portal_name, action=f"Error on {portal_name}")
-
-            live_monitor.update_status(action=f"Scraping complete! Found {len(all_jobs)} total jobs")
-
-    except Exception as e:
-        err_msg = str(e) or traceback.format_exc()
-        live_monitor.add_error(f"Scraping failed: {err_msg[:500]}")
-        live_monitor.update_status(action=f"Scraping error: {str(e)[:100]}")
-    finally:
         try:
-            if browser:
-                await browser.close()
-        except:
-            pass
+            from playwright.async_api import async_playwright
+
+            headless = os.getenv("PLAYWRIGHT_HEADLESS", "true").lower() == "true"
+
+            live_monitor.update_status(
+                portal="Browser",
+                action=f"Cycle {cycle_count}: Launching browser..."
+            )
+
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(
+                    headless=headless,
+                    args=["--no-sandbox", "--disable-blink-features=AutomationControlled"]
+                )
+                context = await browser.new_context(
+                    viewport={"width": 1280, "height": 800},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+                page = await context.new_page()
+
+                portals = [
+                    ("naukri", f"https://www.naukri.com/{keywords.replace(' ', '-')}-jobs-in-{location.lower().replace(' ', '-')}?experience=0"),
+                    ("indeed", f"https://www.indeed.com/jobs?q={keywords.replace(' ', '+')}&l={location}"),
+                    ("linkedin", f"https://www.linkedin.com/jobs/search/?keywords={keywords.replace(' ', '%20')}&location={location}"),
+                    ("shine", f"https://www.shine.com/job-search/{keywords.replace(' ', '-')}-jobs-in-{location.lower().replace(' ', '-')}"),
+                    ("foundit", f"https://www.foundit.in/srp/results?query={keywords.replace(' ', '+')}&location={location}"),
+                ]
+
+                for portal_name, url in portals:
+                    if not _live_scraper_running:
+                        break
+
+                    try:
+                        live_monitor.update_status(
+                            portal=portal_name,
+                            url=url,
+                            action=f"Cycle {cycle_count}: Searching {portal_name}..."
+                        )
+
+                        timeout = 60000 if portal_name == "linkedin" else 30000
+                        await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+
+                        if portal_name == "linkedin":
+                            await asyncio.sleep(5)
+                            try:
+                                await page.wait_for_selector('.jobs-search__results-list, .scaffold-layout__list, [data-view-name="job-card"]', timeout=15000)
+                            except:
+                                pass
+                        else:
+                            await asyncio.sleep(3)
+
+                        ss_bytes = await page.screenshot(type="jpeg", full_page=False, quality=60)
+                        await live_monitor.set_screenshot(screenshot_bytes=ss_bytes)
+                        live_monitor.update_status(
+                            portal=portal_name,
+                            action=f"Cycle {cycle_count}: Extracting jobs from {portal_name}..."
+                        )
+
+                        jobs = []
+                        if portal_name == "naukri":
+                            jobs = await page.evaluate("""() => {
+                                const jobs = [];
+                                document.querySelectorAll('a[href*="/job-listings-"], a[href*="/jobs/"]').forEach(a => {
+                                    const href = a.href;
+                                    const title = a.innerText?.trim() || '';
+                                    if (href && title.length > 5 && title.length < 150) {
+                                        const lines = (a.closest('div')?.innerText || '').split('\\n').filter(l => l.trim());
+                                        jobs.push({
+                                            title,
+                                            company: lines.find(l => /^[A-Z]/.test(l)) || 'Unknown',
+                                            location: lines.find(l => /hyderabad|bangalore|chennai|mumbai|pune|delhi/i.test(l)) || 'Unknown',
+                                            source_url: href
+                                        });
+                                    }
+                                });
+                                const seen = new Set();
+                                return jobs.filter(j => {
+                                    if (seen.has(j.title)) return false;
+                                    seen.add(j.title);
+                                    return true;
+                                }).slice(0, 15);
+                            }""")
+                        elif portal_name == "indeed":
+                            jobs = await page.evaluate("""() => {
+                                const jobs = [];
+                                document.querySelectorAll('a[href*="/viewjob"], a[data-jk], .job_seen_beacon').forEach(el => {
+                                    const a = el.tagName === 'A' ? el : el.querySelector('a');
+                                    if (!a) return;
+                                    const href = a.href;
+                                    const title = a.querySelector('h2')?.innerText || el.querySelector('.jobTitle')?.innerText || '';
+                                    if (href && title.length > 5) {
+                                        jobs.push({
+                                            title: title.trim(),
+                                            company: el.querySelector('[data-company]')?.innerText || el.querySelector('.companyName')?.innerText || 'Unknown',
+                                            location: el.querySelector('[data-location]')?.innerText || el.querySelector('.companyLocation')?.innerText || 'Unknown',
+                                            source_url: href
+                                        });
+                                    }
+                                });
+                                const seen = new Set();
+                                return jobs.filter(j => {
+                                    if (seen.has(j.title)) return false;
+                                    seen.add(j.title);
+                                    return true;
+                                }).slice(0, 15);
+                            }""")
+                        elif portal_name == "linkedin":
+                            jobs = await page.evaluate("""() => {
+                                const jobs = [];
+                                const cards = document.querySelectorAll('.job-card-container, .jobs-search-results__list-item, [data-view-name="job-card"], li.jobs-search-results__list-item');
+                                cards.forEach(card => {
+                                    const titleEl = card.querySelector('.job-card-list__title, .artdeco-entity-lockup__title a, .job-card-container__link, a[data-tracking-control-name="public_jobs_jserp-result_job-title"]');
+                                    const companyEl = card.querySelector('.job-card-container__primary-description, .artdeco-entity-lockup__subtitle, .job-card-container__company-name');
+                                    const locationEl = card.querySelector('.job-card-container__metadata-item, .job-card-container__bullet, .artdeco-entity-lockup__caption');
+                                    const linkEl = card.querySelector('a[href*="/jobs/view/"]');
+                                    if (titleEl && linkEl) {
+                                        jobs.push({
+                                            title: titleEl.innerText?.trim() || '',
+                                            company: companyEl?.innerText?.trim() || 'Unknown',
+                                            location: locationEl?.innerText?.trim() || 'Unknown',
+                                            source_url: linkEl.href
+                                        });
+                                    }
+                                });
+                                if (jobs.length === 0) {
+                                    document.querySelectorAll('a[href*="/jobs/view/"]').forEach(a => {
+                                        const card = a.closest('li') || a.closest('div');
+                                        const title = a.innerText?.trim() || '';
+                                        const allText = card?.innerText || '';
+                                        const lines = allText.split('\\n').filter(l => l.trim());
+                                        if (title.length > 5 && title.length < 150) {
+                                            jobs.push({
+                                                title,
+                                                company: lines.find(l => !l.includes(title) && l.length > 2 && l.length < 60 && !/\\d+/.test(l)) || 'Unknown',
+                                                location: lines.find(l => /hyderabad|bangalore|chennai|mumbai|pune|delhi|india|remote/i.test(l)) || 'Unknown',
+                                                source_url: a.href
+                                            });
+                                        }
+                                    });
+                                }
+                                const seen = new Set();
+                                return jobs.filter(j => {
+                                    if (seen.has(j.title)) return false;
+                                    seen.add(j.title);
+                                    return true;
+                                }).slice(0, 25);
+                            }""")
+                        else:
+                            jobs = await page.evaluate("""() => {
+                                const jobs = [];
+                                document.querySelectorAll('a').forEach(a => {
+                                    const href = a.href;
+                                    const title = a.innerText?.trim() || '';
+                                    if (href && title.length > 10 && title.length < 150 &&
+                                        (href.includes('/job') || href.includes('/listing') || href.includes('/position'))) {
+                                        jobs.push({
+                                            title,
+                                            company: 'Unknown',
+                                            location: 'Unknown',
+                                            source_url: href
+                                        });
+                                    }
+                                });
+                                const seen = new Set();
+                                return jobs.filter(j => {
+                                    if (seen.has(j.title)) return false;
+                                    seen.add(j.title);
+                                    return true;
+                                }).slice(0, 15);
+                            }""")
+
+                        live_monitor.update_status(
+                            portal=portal_name,
+                            action=f"Cycle {cycle_count}: Found {len(jobs)} listings from {portal_name}. Fetching details..."
+                        )
+
+                        for i, job in enumerate(jobs):
+                            if not _live_scraper_running:
+                                break
+
+                            try:
+                                detail_url = job.get("source_url", "")
+                                if not detail_url or detail_url == "Unknown":
+                                    continue
+
+                                job_key = _job_key(
+                                    job.get("title", ""),
+                                    job.get("company", ""),
+                                    portal_name
+                                )
+                                if job_key in seen_urls:
+                                    continue
+                                seen_urls.add(detail_url)
+
+                                if len(seen_urls) > 5000:
+                                    seen_urls.clear()
+
+                                await page.goto(detail_url, wait_until="domcontentloaded", timeout=20000)
+                                await asyncio.sleep(2)
+
+                                description = await page.evaluate("""() => {
+                                    const selectors = [
+                                        '.job-description', '.description__text', '.jobsearch-jobDescriptionText',
+                                        '.jobDescription', '#jobDescriptionText', '.jd-desc',
+                                        '[data-testid="jobDescription"]', '.job-details',
+                                        'article', '.job-description-content'
+                                    ];
+                                    for (const sel of selectors) {
+                                        const el = document.querySelector(sel);
+                                        if (el && el.innerText.trim().length > 50) {
+                                            return el.innerText.trim().substring(0, 5000);
+                                        }
+                                    }
+                                    const main = document.querySelector('main') || document.querySelector('[role="main"]');
+                                    if (main && main.innerText.length > 100) {
+                                        return main.innerText.trim().substring(0, 5000);
+                                    }
+                                    return '';
+                                }""")
+
+                                company_el = await page.evaluate("""() => {
+                                    const selectors = [
+                                        '.company_name', '.companyName', '[data-company]',
+                                        '.employer-name', '.job-details-company-name',
+                                        '.job-card-container__company-name', '.org-name'
+                                    ];
+                                    for (const sel of selectors) {
+                                        const el = document.querySelector(sel);
+                                        if (el && el.innerText.trim().length > 1) {
+                                            return el.innerText.trim();
+                                        }
+                                    }
+                                    return '';
+                                }""")
+
+                                location_el = await page.evaluate("""() => {
+                                    const selectors = [
+                                        '.job-location', '.companyLocation', '.jobDetailsLocation',
+                                        '.job-card-container__metadata-item', '.location'
+                                    ];
+                                    for (const sel of selectors) {
+                                        const el = document.querySelector(sel);
+                                        if (el && el.innerText.trim().length > 1) {
+                                            return el.innerText.trim();
+                                        }
+                                    }
+                                    return '';
+                                }""")
+
+                                skills = await page.evaluate("""() => {
+                                    const text = document.body?.innerText || '';
+                                    const techSkills = ['python', 'java', 'javascript', 'typescript', 'react', 'angular',
+                                        'node', 'sql', 'mysql', 'postgresql', 'mongodb', 'aws', 'azure', 'docker',
+                                        'kubernetes', 'git', 'html', 'css', 'django', 'flask', 'fastapi', 'spring',
+                                        'microservices', 'rest', 'graphql', 'linux', 'redis', 'kafka', 'jenkins',
+                                        'ci/cd', 'machine learning', 'data analysis', 'pandas', 'numpy', 'tensorflow',
+                                        'pytorch', 'spark', 'hadoop', 'tableau', 'power bi', 'excel', 'agile', 'scrum'];
+                                    const found = [];
+                                    const lowerText = text.toLowerCase();
+                                    for (const skill of techSkills) {
+                                        if (lowerText.includes(skill)) {
+                                            found.push(skill);
+                                        }
+                                    }
+                                    return found;
+                                }""")
+
+                                record = JobRecord(
+                                    title=job.get("title", "Unknown")[:500],
+                                    company=(company_el or job.get("company", "Unknown"))[:500],
+                                    location=(location_el or job.get("location", "Unknown"))[:500],
+                                    description=description,
+                                    source=portal_name,
+                                    source_url=detail_url,
+                                    apply_url=detail_url,
+                                    external_id=detail_url,
+                                    skills_required=skills,
+                                    remote="remote" in job.get("title", "").lower() or "remote" in job.get("location", "").lower(),
+                                )
+                                all_records.append(record)
+
+                                live_monitor.add_job({
+                                    "title": job.get("title", "Unknown"),
+                                    "company": company_el or job.get("company", "Unknown"),
+                                    "location": location_el or job.get("location", "Unknown"),
+                                    "portal": portal_name
+                                })
+
+                                if (i + 1) % 5 == 0:
+                                    live_monitor.update_status(
+                                        portal=portal_name,
+                                        action=f"Cycle {cycle_count}: {portal_name} - {i + 1}/{len(jobs)} details fetched"
+                                    )
+
+                            except Exception as e:
+                                record = JobRecord(
+                                    title=job.get("title", "Unknown")[:500],
+                                    company=job.get("company", "Unknown")[:500],
+                                    location=job.get("location", "Unknown")[:500],
+                                    description="",
+                                    source=portal_name,
+                                    source_url=job.get("source_url", ""),
+                                    apply_url=job.get("source_url", ""),
+                                    external_id=job.get("source_url", ""),
+                                )
+                                all_records.append(record)
+
+                        live_monitor.update_status(
+                            portal=portal_name,
+                            action=f"Cycle {cycle_count}: {portal_name} complete. {len(jobs)} jobs extracted."
+                        )
+                        await asyncio.sleep(2)
+
+                    except Exception as e:
+                        err = str(e)[:100]
+                        live_monitor.add_error(f"{portal_name}: {err}")
+                        live_monitor.update_status(
+                            portal=portal_name,
+                            action=f"Cycle {cycle_count}: Error on {portal_name} - {err}"
+                        )
+
+                if all_records:
+                    live_monitor.update_status(
+                        action=f"Cycle {cycle_count}: Saving {len(all_records)} jobs to database..."
+                    )
+                    saved = await _persist(all_records)
+                    total_saved += saved
+                    live_monitor.update_status(
+                        action=f"Cycle {cycle_count}: Saved {saved} new jobs to database ({total_saved} total). Waiting 60s..."
+                    )
+                else:
+                    live_monitor.update_status(
+                        action=f"Cycle {cycle_count}: No new jobs found. Waiting 60s..."
+                    )
+
+        except Exception as e:
+            err_msg = str(e) or traceback.format_exc()
+            live_monitor.add_error(f"Cycle {cycle_count} failed: {err_msg[:500]}")
+            live_monitor.update_status(action=f"Cycle {cycle_count} error: {str(e)[:100]}. Retrying in 60s...")
+        finally:
+            try:
+                if browser:
+                    await browser.close()
+            except:
+                pass
+
+        if _live_scraper_running:
+            await asyncio.sleep(60)
+
+    live_monitor.update_status(action="Scraping stopped")
+    logger.info("Live scraper stopped after %d cycles", cycle_count)
 
 
 # === COMPANY RESEARCH ===
@@ -1389,14 +1642,14 @@ async def generate_custom_resume(job_id: int):
 
 
 @app.get("/download-resume/{resume_id}")
-async def download_custom_resume(resume_id: int):
+async def download_custom_resume(resume_id: int, user=Depends(get_current_user)):
     """
-    Download generated custom resume
+    Download generated custom resume - allows download even without active auth (link sharing).
     """
     from database.engine import async_session
     from database.models import CustomResume
     from sqlalchemy import select
-    
+
     async with async_session() as session:
         result = await session.execute(
             select(CustomResume).where(CustomResume.id == resume_id)
@@ -1404,15 +1657,116 @@ async def download_custom_resume(resume_id: int):
         custom_resume = result.scalar_one_or_none()
         if not custom_resume:
             raise HTTPException(status_code=404, detail="Resume not found")
-        
+
+        # Require auth for access (but don't fail if no user - just check ownership)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        if custom_resume.user_id != user.id:
+            raise HTTPException(status_code=403, detail="Not authorized to access this resume")
+
         if not os.path.exists(custom_resume.resume_docx_path):
             raise HTTPException(status_code=404, detail="Resume file not found on disk")
-        
+
         return FileResponse(
             custom_resume.resume_docx_path,
             media_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
             filename=f"resume_{custom_resume.job_id}.docx"
         )
+
+
+# === USER PROFILE ENDPOINTS (needed by frontend) ===
+
+@app.get("/me/profile")
+async def get_my_profile(user=Depends(get_current_user)):
+    """Get current user profile with resume and preferences."""
+    from database.engine import async_session
+    from database.models import Resume, UserPreference
+    from sqlalchemy import select
+
+    async with async_session() as session:
+        # Get preferences
+        pref_result = await session.execute(
+            select(UserPreference).where(UserPreference.user_id == user.id)
+        )
+        pref = pref_result.scalar_one_or_none()
+
+        # Get latest resume
+        resume_result = await session.execute(
+            select(Resume).where(Resume.user_id == user.id).order_by(Resume.created_at.desc()).limit(1)
+        )
+        resume = resume_result.scalar_one_or_none()
+
+        return {
+            "email": user.email,
+            "full_name": user.full_name,
+            "skills": resume.skills if resume and resume.skills else [],
+            "target_roles": pref.desired_roles if pref else [],
+            "target_locations": pref.desired_locations if pref else [],
+            "resume_text": resume.text_content if resume else "",
+            "experience_years": resume.experience_years if resume else 0,
+        }
+
+
+@app.get("/me/matches")
+async def get_my_matches(user=Depends(get_current_user), limit: int = Query(50, ge=1, le=200), min_score: float = Query(0, ge=0, le=100)):
+    """Get jobs matched against user's resume."""
+    from database.engine import async_session
+    from database.models import Job, JobMatch
+    from sqlalchemy import select
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(Job, JobMatch)
+            .join(JobMatch, Job.id == JobMatch.job_id, isouter=True)
+            .order_by(JobMatch.overall_score.desc().nullslast())
+            .limit(limit)
+        )
+        rows = result.all()
+
+        matches = []
+        for job, match in rows:
+            matches.append({
+                "id": job.id,
+                "title": job.title,
+                "company": job.company,
+                "location": job.location,
+                "source": job.source,
+                "source_url": job.source_url,
+                "apply_url": job.apply_url,
+                "match": {
+                    "score": match.overall_score if match else job.match_score or 0,
+                    "matched_skills": match.matched_skills if match else [],
+                },
+                "ats_score": job.ats_score,
+            })
+
+        return {"matches": matches, "count": len(matches)}
+
+
+@app.post("/me/resume")
+async def save_resume_text(user=Depends(get_current_user), text_content: str = "", skills: list = None):
+    """Save resume text and skills for the user."""
+    from database.engine import async_session
+    from database.models import Resume
+    from sqlalchemy import select
+
+    async with async_session() as session:
+        # Check if resume exists
+        result = await session.execute(
+            select(Resume).where(Resume.user_id == user.id)
+        )
+        resume = result.scalar_one_or_none()
+
+        if not resume:
+            resume = Resume(user_id=user.id, text_content=text_content, skills=skills or [])
+            session.add(resume)
+        else:
+            resume.text_content = text_content
+            resume.skills = skills or resume.skills or []
+
+        await session.commit()
+        return {"success": True, "message": "Resume saved"}
 
 
 # === VISION-GUIDED SCRAPING ENDPOINTS (V2) ===
@@ -2246,8 +2600,10 @@ async def run_ui_tars_stream(request: UITarsTaskRequest):
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
-# Serve built frontend static assets (JS/CSS from Vite build)
-app.mount("/assets", StaticFiles(directory=str(project_root / "frontend-3d" / "dist" / "assets")), name="assets")
+# Serve built frontend static assets (JS/CSS from Vite build) - only mount if directory exists
+assets_path = project_root / "frontend-3d" / "dist" / "assets"
+if assets_path.exists():
+    app.mount("/assets", StaticFiles(directory=str(assets_path)), name="assets")
 
 # SPA fallback - serve index.html for all non-API routes (React Router handles client-side)
 @app.get("/{full_path:path}")

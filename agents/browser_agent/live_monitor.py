@@ -141,11 +141,11 @@ class LiveScraperMonitor:
             self.last_update = datetime.now().isoformat()
         self._flush_to_file()
 
-    def set_screenshot(self, page=None, screenshot_bytes=None):
-        """Capture a screenshot. Pass a Playwright page (sync) or raw screenshot_bytes."""
+    async def set_screenshot(self, page=None, screenshot_bytes=None):
+        """Capture a screenshot. Pass a Playwright page (async) or raw screenshot_bytes."""
         try:
             if screenshot_bytes is None and page is not None:
-                screenshot_bytes = page.screenshot(type="jpeg", full_page=False, quality=50)
+                screenshot_bytes = await page.screenshot(type="jpeg", full_page=False, quality=50)
             if screenshot_bytes is None:
                 return
             screenshot_b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
