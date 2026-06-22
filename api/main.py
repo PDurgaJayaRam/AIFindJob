@@ -528,7 +528,26 @@ async def _run_continuous_scrape_async():
     from ingestion.base import JobRecord
     import os
 
-    keywords = os.getenv("SCRAPE_QUERY", "python java sql developer")
+    async def _get_user_keywords():
+        """Get keywords from user preferences."""
+        try:
+            from database.engine import async_session
+            from database.models import UserPreference
+            from sqlalchemy import select
+            
+            async with async_session() as session:
+                result = await session.execute(
+                    select(UserPreference).limit(1)
+                )
+                pref = result.scalar_one_or_none()
+                if pref and pref.desired_roles:
+                    return pref.desired_roles
+        except Exception:
+            pass
+        return os.getenv("SCRAPE_QUERY", "python java sql developer").split(",")[:3]
+
+    keywords_list = await _get_user_keywords()
+    keywords = " ".join(keywords_list)
     location = os.getenv("SCRAPE_LOCATION", "Hyderabad")
     cycle_count = 0
     total_saved = 0
@@ -539,6 +558,29 @@ async def _run_continuous_scrape_async():
 
     def _job_key(title, company, source):
         return f"{_normalize(title)}|{_normalize(company)}|{_normalize(source)}"
+
+    def _is_fresher_friendly(title, description, experience_text):
+        """Check if a job is suitable for freshers (0-1 years experience)."""
+        text = f"{title} {description} {experience_text}".lower()
+        
+        senior_keywords = [
+            'senior', 'sr.', 'lead', 'principal', 'staff', 'architect',
+            'director', 'vp', 'head of', 'chief', '10+ years', '12+ years',
+            '15+ years', '20+ years', '8+ years', '7+ years', '6+ years',
+            'experienced', 'seasoned', 'expert'
+        ]
+        
+        for keyword in senior_keywords:
+            if keyword in text:
+                return False
+        
+        exp_patterns = re.findall(r'(\d+)\+?\s*years?\s*(?:of\s*)?(?:experience|exp)', text)
+        for match in exp_patterns:
+            years = int(match)
+            if years > 1:
+                return False
+        
+        return True
 
     while _live_scraper_running:
         cycle_count += 1
@@ -899,10 +941,15 @@ async def _run_continuous_scrape_async():
                         )
 
                 if all_records:
+                    fresher_records = []
+                    for record in all_records:
+                        if _is_fresher_friendly(record.title, record.description, record.experience_required):
+                            fresher_records.append(record)
+                    
                     live_monitor.update_status(
-                        action=f"Cycle {cycle_count}: Saving {len(all_records)} jobs to database..."
+                        action=f"Cycle {cycle_count}: Saving {len(fresher_records)} fresher-friendly jobs (filtered from {len(all_records)})..."
                     )
-                    saved = await _persist(all_records)
+                    saved = await _persist(fresher_records)
                     total_saved += saved
                     live_monitor.update_status(
                         action=f"Cycle {cycle_count}: Saved {saved} new jobs to database ({total_saved} total). Waiting 60s..."
