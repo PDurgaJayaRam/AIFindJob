@@ -4,12 +4,9 @@ Steps (cheapest/safest first):
 1. Resolve company domain (provided or naive guess from name).
 2. Scrape the company site's team/contact pages for names + emails (httpx +
    BeautifulSoup, both already in requirements).
-3. Infer email patterns for any names without emails.
-4. Verify inferred emails via free MX lookup (optional dnspython).
-5. (Optional) public social search via OSINT tools (lazy imports) — skipped if
-   not installed; never breaks the flow.
+3. Verify emails via free MX lookup (optional dnspython).
 
-Returns contacts with confidence scores. Public data only.
+Returns ONLY real contacts found on company websites. No fake/inferred contacts.
 """
 from __future__ import annotations
 
@@ -19,27 +16,32 @@ from typing import Any
 
 import httpx
 
-from people_finder.email_patterns import infer_emails, domain_has_mx, score_email
+from people_finder.email_patterns import domain_has_mx
 
 logger = logging.getLogger("people_finder.finder")
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-_TEAM_PATHS = ["", "about", "team", "about-us", "company", "contact", "people"]
+_TEAM_PATHS = ["", "about", "team", "about-us", "company", "contact", "people", "careers", "jobs"]
 
 
 def guess_domain(company: str) -> str:
     """Naive domain guess from a company name (best-effort, public)."""
-    slug = re.sub(r"[^a-z0-9]", "", (company or "").lower())
+    clean = re.sub(r"\s*\([^)]*\)\s*", " ", company or "")
+    clean = re.sub(r"\s+(?:inc|llc|ltd|corp|gmbH|ag|sa|plc)$", "", clean, flags=re.IGNORECASE)
+    slug = re.sub(r"[^a-z0-9]+", "", clean.lower().strip())
     return f"{slug}.com" if slug else ""
 
 
-async def scrape_company_emails(domain: str, timeout: float = 12.0) -> list[str]:
-    """Collect emails visible on common company pages. Best-effort, isolated."""
+async def scrape_company_contacts(domain: str, timeout: float = 12.0) -> list[dict[str, Any]]:
+    """Scrape real contacts from company website pages."""
     if not domain:
         return []
-    found: set[str] = set()
+    
+    contacts = []
+    seen_emails = set()
     base = f"https://{domain}"
     headers = {"User-Agent": "Mozilla/5.0 (compatible; JOBFinderBot/1.0)"}
+    
     async with httpx.AsyncClient(timeout=timeout, headers=headers, follow_redirects=True) as client:
         for path in _TEAM_PATHS:
             url = f"{base}/{path}".rstrip("/")
@@ -47,13 +49,61 @@ async def scrape_company_emails(domain: str, timeout: float = 12.0) -> list[str]
                 resp = await client.get(url)
                 if resp.status_code != 200:
                     continue
-                for m in _EMAIL_RE.findall(resp.text):
-                    if m.lower().endswith(domain.lower()):
-                        found.add(m.lower())
+                
+                html = resp.text
+                
+                email_pattern = re.compile(
+                    r'(?:mailto:)?([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})',
+                    re.IGNORECASE
+                )
+                
+                name_email_pattern = re.compile(
+                    r'(?:<[^>]*>)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})(?:</[^>]*>)?\s*(?:[-–—•·:|]\s*)?(?:mailto:)?([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})',
+                    re.IGNORECASE
+                )
+                
+                for match in name_email_pattern.finditer(html):
+                    name = match.group(1).strip()
+                    email = match.group(2).lower()
+                    
+                    if email in seen_emails:
+                        continue
+                    if not email.endswith(domain.lower()):
+                        continue
+                    if any(skip in name.lower() for skip in ['javascript', 'script', 'function', 'var', 'const', 'let']):
+                        continue
+                    
+                    seen_emails.add(email)
+                    contacts.append({
+                        "name": name,
+                        "email": email,
+                        "confidence": 0.7,
+                        "source": f"company_site/{path or 'home'}",
+                    })
+                
+                for match in email_pattern.finditer(html):
+                    email = match.group(1).lower()
+                    
+                    if email in seen_emails:
+                        continue
+                    if not email.endswith(domain.lower()):
+                        continue
+                    if any(skip in email for skip in ['example', 'test', 'admin', 'noreply', 'no-reply', 'support', 'info@']):
+                        continue
+                    
+                    seen_emails.add(email)
+                    contacts.append({
+                        "name": "",
+                        "email": email,
+                        "confidence": 0.6,
+                        "source": f"company_site/{path or 'home'}",
+                    })
+                    
             except Exception as exc:
                 logger.debug("scrape %s failed: %s", url, exc)
                 continue
-    return sorted(found)
+    
+    return contacts
 
 
 async def find_contacts(
@@ -61,34 +111,27 @@ async def find_contacts(
     domain: str = "",
     candidate_names: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Run the waterfall and return contacts with confidence scores."""
+    """Run the waterfall and return REAL contacts only.
+    
+    Returns contacts found on company websites. No fake/inferred contacts.
+    """
     domain = (domain or "").strip().lower().lstrip("@") or guess_domain(company)
-    contacts: list[dict[str, Any]] = []
-
-    # Step 2: real emails visible on the company site (highest confidence).
+    
+    contacts = []
+    
     try:
-        scraped = await scrape_company_emails(domain)
+        contacts = await scrape_company_contacts(domain)
     except Exception as exc:
         logger.info("company scrape failed: %s", exc)
-        scraped = []
-    for email in scraped:
-        contacts.append({
-            "name": "",
-            "email": email,
-            "confidence": 0.8,
-            "status": "published_on_site",
-            "source": "company_site",
-        })
-
-    # Steps 3+4: infer + verify emails for provided names.
-    mx_ok = domain_has_mx(domain) if domain else False
-    for name in (candidate_names or []):
-        for email in infer_emails(name, domain):
-            scored = score_email(email, mx_ok)
-            scored.update({"name": name, "source": "inferred"})
-            contacts.append(scored)
-
+    
     contacts.sort(key=lambda c: c.get("confidence", 0), reverse=True)
+    
+    return {
+        "company": company,
+        "domain": domain,
+        "contacts": contacts[:20],
+        "total_found": len(contacts),
+    }
     return {
         "company": company,
         "domain": domain,
