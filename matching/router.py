@@ -5,6 +5,7 @@ main app (passed in at mount time to avoid a circular import).
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, Depends, Query, HTTPException
@@ -32,6 +33,10 @@ def build_router(get_current_user: Callable) -> APIRouter:
     async def save_resume(body: ResumeIn, user=Depends(get_current_user)):
         """Store/replace the user's resume + target roles used for matching."""
         async with async_session() as session:
+            # Parse resume sections for optimization (PHASE 4.9)
+            from resume_tailor.resume_parser import parse_resume_sections
+            parsed_sections = parse_resume_sections(body.text_content or "")
+            
             resume = Resume(
                 user_id=user.id,
                 filename=body.filename or "resume.txt",
@@ -42,6 +47,7 @@ def build_router(get_current_user: Callable) -> APIRouter:
                     "is_fresher": body.is_fresher,
                     "target_roles": body.target_roles,
                 },
+                parsed_sections=parsed_sections,
             )
             session.add(resume)
 
@@ -121,12 +127,48 @@ def build_router(get_current_user: Callable) -> APIRouter:
                     "source_url": j.source_url,
                     "apply_url": j.apply_url,
                     "skills_required": j.skills_required or [],
+                    "created_at": j.created_at.isoformat() if j.created_at else "",
                 }
                 for j in pool_rows.scalars().all()
             ]
 
         ranked = rank_jobs(pool, profile)
         ranked = [r for r in ranked if r["match"]["score"] >= min_score][:limit]
-        return {"count": len(ranked), "profile": profile, "matches": ranked}
+        
+        # If we have few matches, trigger background scrape for user's roles
+        if len(ranked) < limit // 2 and profile.get("target_roles"):
+            asyncio.create_task(_ensure_jobs_for_roles(profile["target_roles"]))
+        
+        return {"count": len(ranked), "profile": profile, "matches": ranked, "background_scrape_triggered": len(ranked) < limit // 2}
 
     return router
+
+
+async def _ensure_jobs_for_roles(roles: list[str]):
+    """Background task to ensure we have jobs for specific roles.
+    
+    This prevents the "wait for a decade" problem - immediately triggers
+    scraping when a user's query has few matches.
+    """
+    try:
+        role_skills = []
+        role_lower = [r.lower() for r in roles]
+        
+        for role in role_lower:
+            if "graphic" in role or "design" in role:
+                role_skills.extend(["graphic designer", "ui ux", "creative"])
+            elif "data" in role or "analyst" in role:
+                role_skills.extend(["data analyst", "business analyst"])
+            elif "python" in role or "django" in role:
+                role_skills.extend(["python developer", "django"])
+            elif "java" in role:
+                role_skills.extend(["java developer", "spring"])
+            else:
+                role_skills.append(role)
+        
+        query = role_skills[0] if role_skills else "developer"
+        
+        from ingestion.engine import run_browser_pool_source
+        await run_browser_pool_source(query=query, location="india", experience_level="fresher")
+    except Exception as e:
+        pass  # Silent fail - UI will retry on next refresh

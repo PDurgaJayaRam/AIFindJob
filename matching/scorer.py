@@ -77,8 +77,7 @@ def score_job(
 
 
 def rank_jobs(jobs: list[dict[str, Any]], profile: dict[str, Any]) -> list[dict[str, Any]]:
-    """Score and sort pool jobs (highest first). Each input job is a dict with
-    title/description/skills_required. Returns jobs annotated with match info."""
+    """Score and sort pool jobs. Sorts by score first, then by date (newest first)."""
     user_skills = profile.get("skills") or []
     target_roles = profile.get("target_roles") or []
     is_fresher = bool(profile.get("is_fresher", True))
@@ -97,5 +96,5 @@ def rank_jobs(jobs: list[dict[str, Any]], profile: dict[str, Any]) -> list[dict[
         )
         scored.append({**job, "match": result})
 
-    scored.sort(key=lambda j: j["match"]["score"], reverse=True)
+    scored.sort(key=lambda j: (j["match"]["score"], j.get("created_at", "")), reverse=True)
     return scored
