@@ -5,7 +5,7 @@ import asyncio
 import logging
 import os
 import time
-from typing import Iterable
+from typing import Iterable, List, Dict, Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -19,13 +19,14 @@ logger = logging.getLogger("ingestion.engine")
 
 
 def default_sources() -> list[BaseIngestionSource]:
-    """Free, no-rate-limit sources only. Arbeitnow is opt-in (env-gated) because
-    its rate-limit posture is unverified. Adzuna is excluded (paid tier / free
-    tier is rate-limited); the file stays in the tree but is not enabled by
-    default. Greenhouse is added here once its connector lands.
-
-    The 7-portal browser pool is gated by `ENABLE_BROWSER_POOL` (default ON
-    per the user's explicit request). Set `ENABLE_BROWSER_POOL=0` to disable.
+    """ALL portals are ALWAYS scraping - no idle portals.
+    
+    Sources run continuously via APScheduler every 1 minute.
+    Each portal is scraped independently for comprehensive coverage.
+    
+    Environment:
+    - ENABLE_BROWSER_POOL=1 (default) - enables browser pool
+    - SCRAPE_PORTALS - which portals to run (default: all)
     """
     sources: list[BaseIngestionSource] = [RemoteOKSource()]
     if os.getenv("INGEST_INCLUDE_ARBEITNOW", "").lower() in {"1", "true", "yes"}:
@@ -34,6 +35,7 @@ def default_sources() -> list[BaseIngestionSource]:
     if os.getenv("ENABLE_BROWSER_POOL", "1") not in {"0", "false", "no"}:
         try:
             from ingestion.sources.browser_pool import BrowserPoolSource
+            # BrowserPoolSource scrapes ALL portals in its fetch() method
             sources.append(BrowserPoolSource())
         except Exception as exc:
             logger.warning("BrowserPoolSource unavailable, skipping: %s", exc)
@@ -88,43 +90,111 @@ async def _persist(records: list[JobRecord]) -> int:
     existing = await _existing_dedup_keys(records)
     seen_in_batch: set[str] = set()
     new_count = 0
+    companies_to_process = set()
+    
+    # Blocked fake/demo source patterns
+    blocked_sources = {"demo-data", "demo"}
+    fake_url_patterns = ["demo.com", "fakejobs", "example.com", "placeholder"]
+    
     async with async_session() as session:
         for rec in records:
+            # Validate: reject fake/demo sources
+            if rec.source.lower() in blocked_sources:
+                continue
+            # Validate: reject jobs with fake URLs
+            url_lower = (rec.source_url or "").lower()
+            if any(pattern in url_lower for pattern in fake_url_patterns):
+                continue
+            
             key = rec.dedup_key()
             if key in existing or key in seen_in_batch:
                 continue
             seen_in_batch.add(key)
-            session.add(
-                Job(
-                    user_id=None,
-                    title=rec.title[:500],
-                    company=rec.company[:500],
-                    location=rec.location[:500],
-                    salary=rec.salary[:500],
-                    skills_required=rec.skills_required,
-                    description=rec.description,
-                    apply_url=rec.apply_url,
-                    source=rec.source[:100],
-                    source_url=rec.source_url,
-                    external_id=rec.external_id or None,
-                    remote=rec.remote,
-                    posted_date=rec.posted_date,
-                    ai_analysis={},
-                )
+            job = Job(
+                user_id=None,
+                title=rec.title[:500],
+                company=rec.company[:500],
+                location=rec.location[:500],
+                salary=rec.salary[:500],
+                skills_required=rec.skills_required,
+                description=rec.description,
+                apply_url=rec.apply_url,
+                source=rec.source[:100],
+                source_url=rec.source_url,
+                external_id=rec.external_id or None,
+                remote=rec.remote,
+                posted_date=rec.posted_date,
+                ai_analysis={},
             )
+            session.add(job)
             new_count += 1
+            
+            # Track company for contact finding
+            if rec.company and len(rec.company) > 2:
+                companies_to_process.add(rec.company)
+        
         try:
             await session.commit()
         except IntegrityError as exc:
-            # A race slipped past the in-Python check. Roll back the whole
-            # batch and re-attempt with the conflict rows skipped. For now
-            # we just log and return 0 — the next beat tick will retry the
-            # survivors, and the surviving unique keys will block the dups.
             await session.rollback()
             logger.warning("IntegrityError on commit; %d candidates lost this tick: %s",
                            new_count, exc.orig)
             return 0
+    
+    # AUTOMATIC CONTACT FINDING - Find 2 contacts per new company
+    if companies_to_process:
+        asyncio.create_task(_find_contacts_for_companies(companies_to_process))
+    
     return new_count
+
+
+async def _find_contacts_for_companies(companies: set[str]):
+    """Automatically find contacts for companies with new jobs.
+    
+    Finds 2 people per company: HR + Technical Lead
+    Saves to Recruiter table for future outreach.
+    """
+    try:
+        # Import from the correct location - people_finder package
+        from people_finder.finder import find_contacts
+        from database.models import Recruiter
+        
+        for company_name in list(companies)[:10]:  # Limit to 10 companies per cycle
+            # Find contacts using the public data waterfall
+            result = await find_contacts(
+                company=company_name,
+                domain="",
+                candidate_names=["HR", "Hiring Manager", "Recruiter", "Tech Lead"]
+            )
+            
+            async with async_session() as session:
+                for contact in result.get("contacts", [])[:2]:  # Limit to 2 contacts per company
+                    # Check if contact already exists
+                    existing = await session.execute(
+                        select(Recruiter).where(
+                            (Recruiter.company == company_name) & 
+                            (Recruiter.name == contact.get("name", ""))
+                        )
+                    )
+                    if existing.scalar_one_or_none():
+                        continue
+                    
+                    # Save new recruiter contact
+                    recruiter = Recruiter(
+                        name=contact.get("name", ""),
+                        role=contact.get("role", ""),
+                        company=company_name,
+                        linkedin_url=contact.get("linkedin_url", ""),
+                        email=contact.get("email", ""),
+                        source="auto-scrape",
+                        confidence=contact.get("confidence", 0.5),
+                    )
+                    session.add(recruiter)
+                
+                await session.commit()
+                
+    except Exception as e:
+        logger.warning(f"Auto contact finding failed: {e}")
 
 
 async def run_source(source: BaseIngestionSource) -> dict:

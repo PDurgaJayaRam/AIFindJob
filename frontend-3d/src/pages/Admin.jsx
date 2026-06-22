@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { fetchAdminOverview, fetchLiveScraperStatus, startLiveScraper, stopLiveScraper } from '../lib/api.js';
+import { motion } from 'framer-motion';
+import { fetchAdminOverview, fetchLiveScraperStatus, startLiveScraper, stopLiveScraper, triggerAllPortalsScrape, getPortalStatus, triggerSpecificPortal } from '../lib/api.js';
 
 export default function Admin() {
   const [data, setData] = useState(null);
@@ -8,6 +9,9 @@ export default function Admin() {
   const [liveStatus, setLiveStatus] = useState(null);
   const [liveScraperActive, setLiveScraperActive] = useState(false);
   const [scraperInterval, setScraperInterval] = useState(null);
+  const [portalStatus, setPortalStatus] = useState(null);
+  const [triggers, setTriggers] = useState({});
+  const [contactStats, setContactStats] = useState({ totalContacts: 0, companiesWithContacts: 0 });
 
   // Fetch admin overview (pool + sources)
   useEffect(() => {
@@ -23,6 +27,33 @@ export default function Admin() {
       clearInterval(id);
     };
   }, []);
+
+  // Portal status
+  useEffect(() => {
+    getPortalStatus().then(setPortalStatus).catch(() => {});
+  }, []);
+
+  // Check if live scraper is already running on backend when Admin page loads
+  useEffect(() => {
+    fetchLiveScraperStatus()
+      .then((s) => {
+        if (s?.is_running) {
+          setLiveScraperActive(true);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // Contact database stats
+  useEffect(() => {
+    if (data?.pool?.total_jobs) {
+      // Set contact stats from portal status response
+      setContactStats({
+        totalContacts: portalStatus?.contact_database?.total_contacts || 0,
+        companiesWithContacts: portalStatus?.contact_database?.companies_with_contacts || 0
+      });
+    }
+  }, [data, portalStatus]);
 
   // Poll live scraper status when active
   useEffect(() => {
@@ -51,7 +82,7 @@ export default function Admin() {
 
   const handleStartScraper = async () => {
     try {
-      await startLiveScraper();
+      const result = await startLiveScraper();
       setLiveScraperActive(true);
       setLiveStatus(null);
     } catch (e) {
@@ -63,6 +94,7 @@ export default function Admin() {
     try {
       await stopLiveScraper();
       setLiveScraperActive(false);
+      setLiveStatus(null);
     } catch (e) {
       setError(`Failed to stop live scraper: ${e.message}`);
     }
@@ -235,6 +267,68 @@ export default function Admin() {
                 {s.last_error && <p className="text-xs text-amber-300 mt-1">Error: {s.last_error}</p>}
               </div>
             ))}
+          </div>
+
+          {/* Portal Controls */}
+          <motion.h2
+            initial={{ filter: 'blur(10px)', opacity: 0 }}
+            animate={{ filter: 'blur(0px)', opacity: 1 }}
+            transition={{ duration: 0.8, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            className="text-lg font-black text-white mb-3 tracking-tighter blur-reveal"
+          >
+            Portal Controls - All Portals Active
+          </motion.h2>
+          
+          {/* Contact Database Stats */}
+          <div className="glass rounded-xl p-4 mb-4">
+            <p className="text-sm text-gray-400">Contact Database</p>
+            <div className="flex gap-6 mt-2">
+              <div>
+                <span className="text-2xl font-bold text-aqua">{contactStats.totalContacts}</span>
+                <span className="text-xs text-gray-400 ml-1">Contacts Found</span>
+              </div>
+              <div>
+                <span className="text-2xl font-bold text-nebula">{contactStats.companiesWithContacts}</span>
+                <span className="text-xs text-gray-400 ml-1">Companies Tracked</span>
+              </div>
+            </div>
+          </div>
+          
+          <div className="glass rounded-2xl p-6 mb-8 ease-elastic">
+            <p className="text-gray-400 text-sm mb-4">
+              Scrape interval: every {portalStatus?.scrape_interval_minutes || 1} minute(s) - ALL portals continuously active
+            </p>
+            
+            <div className="flex flex-col md:flex-row gap-4 mb-4">
+              <button
+                onClick={() => triggerAllPortalsScrape("developer", "India")}
+                className="px-4 py-2 rounded-lg bg-gradient-to-r from-nebula to-aqua text-ink font-semibold hover:opacity-90 transition-opacity"
+              >
+                🔁 Trigger All Portals Now
+              </button>
+            </div>
+
+            {/* Individual Portal Status */}
+            {portalStatus && portalStatus.portals && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
+                {portalStatus.portals.map((portal) => (
+                  <div key={portal.name} className="glass rounded-lg p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="font-medium text-white">{portal.name}</span>
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${portal.ok ? 'bg-green-500/20 text-green-300' : 'bg-gray-500/20 text-gray-400'}`}>
+                        {portal.ok ? '✓ Active' : '○ Idle'}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => triggerSpecificPortal(portal.name)}
+                      className="text-xs px-2 py-1 bg-aqua/20 text-aqua rounded hover:bg-aqua/30 transition-colors w-full"
+                    >
+                      Scrape Now
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </>
       )}
