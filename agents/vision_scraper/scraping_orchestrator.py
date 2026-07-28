@@ -37,6 +37,7 @@ class ScrapingOrchestrator:
 
         self.browser = browser or BrowserController(headless=self.config.browser.headless)
         self.rate_limiter = RateLimiter()
+        self.rate_limiter.configure_provider("nvidia", self.config.rate_limit.nvidia_rpm)
         self.rate_limiter.configure_provider("mistral", self.config.rate_limit.mistral_rpm)
         self.rate_limiter.configure_provider("gemini", self.config.rate_limit.gemini_rpm)
 

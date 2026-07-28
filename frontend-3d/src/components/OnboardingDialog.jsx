@@ -375,7 +375,8 @@ export default function OnboardingDialog({ onComplete }) {
               disabled={
                 loading || parsing ||
                 (step === 1 && !resumeFile && profile.target_roles.length === 0) ||
-                (step === 2 && profile.target_roles.length === 0)
+                (step === 2 && profile.target_roles.length === 0) ||
+                (step === 4 && profile.target_roles.length === 0)
               }
               className="px-8 py-2.5 bg-gradient-to-r from-nebula to-aqua text-ink font-semibold rounded-full hover:opacity-90 disabled:opacity-50 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
             >

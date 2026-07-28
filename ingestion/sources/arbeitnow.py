@@ -59,6 +59,7 @@ class ArbeitnowSource(BaseIngestionSource):
                 except ValueError:
                     posted = None
             url = (item.get("url") or "").strip()
+            slug = (item.get("slug") or "").strip()
             records.append(
                 JobRecord(
                     title=title,
@@ -69,6 +70,7 @@ class ArbeitnowSource(BaseIngestionSource):
                     source_url=url,
                     apply_url=url,
                     salary="",
+                    external_id=slug,
                     remote=bool(item.get("remote", False)),
                     skills_required=[str(t) for t in tags],
                     posted_date=posted,

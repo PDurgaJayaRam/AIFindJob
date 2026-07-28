@@ -33,6 +33,9 @@ lxml==5.1.0
 markdownify==0.12.1
 fake-useragent==1.4.0
 
+# LinkedIn API (unofficial Voyager endpoints)
+open-linkedin-api==2.3.1
+
 # AI / LLM
 openai==1.12.0
 anthropic==0.18.0

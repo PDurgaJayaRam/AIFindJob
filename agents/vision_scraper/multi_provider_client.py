@@ -99,6 +99,7 @@ class MultiProviderAIClient:
         self._rate_limiter = rate_limiter
         self._mistral_api_key = os.getenv("MISTRAL_API_KEY")
         self._gemini_api_key = os.getenv("GEMINI_API_KEY")
+        self._nvidia_api_key = os.getenv("NVIDIA_API_KEY")
         self._max_retries = 2
 
     def _encode_image_to_base64(self, image_data: bytes) -> str:
@@ -116,6 +117,40 @@ class MultiProviderAIClient:
             text = text[:-3]
         return json.loads(text.strip())
 
+    def _call_nvidia_vision(self, image_b64: str, prompt: str, model: str = "meta/llama-3.2-90b-vision-instruct") -> Dict[str, Any]:
+        """Call NVIDIA API for vision analysis (supports Llama vision models)."""
+        from openai import AsyncOpenAI
+        
+        client = AsyncOpenAI(
+            api_key=self._nvidia_api_key,
+            base_url="https://integrate.api.nvidia.com/v1",
+        )
+        
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                    },
+                ],
+            }
+        ]
+        
+        # Run async in sync context
+        import asyncio
+        response = asyncio.run(
+            client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.2,
+                max_tokens=200,
+            )
+        )
+        return {"provider": "nvidia", "text": response.choices[0].message.content}
+
     def _call_mistral_function(
         self, 
         image_b64: str, 
@@ -123,6 +158,8 @@ class MultiProviderAIClient:
         model: str = "ministral-14b-latest"
     ) -> Dict[str, Any]:
         """Call Mistral API with UI-TARS style function calling."""
+        if not self._mistral_api_key:
+            raise RuntimeError("MISTRAL_API_KEY not configured")
         from mistralai import Mistral
 
         client = Mistral(api_key=self._mistral_api_key)
@@ -168,6 +205,8 @@ class MultiProviderAIClient:
 
     def _call_mistral(self, image_b64: str, prompt: str, model: str = "pixtral-12b") -> Dict[str, Any]:
         """Call Mistral Pixtral API for vision analysis (legacy JSON mode)."""
+        if not self._mistral_api_key:
+            raise RuntimeError("MISTRAL_API_KEY not configured")
         from mistralai import Mistral
 
         client = Mistral(api_key=self._mistral_api_key)
@@ -218,7 +257,7 @@ class MultiProviderAIClient:
             image: Image bytes
             prompt: Vision prompt
             model: Specific model to use
-            provider: Force specific provider ('mistral' or 'gemini')
+            provider: Force specific provider ('mistral', 'nvidia', or 'gemini')
             use_function_calling: Use UI-TARS style function calling (Mistral only)
             
         Returns:
@@ -226,29 +265,17 @@ class MultiProviderAIClient:
         """
         image_b64 = self._encode_image_to_base64(image)
         
-        # Use function calling for Mistral if enabled
-        if use_function_calling and (not provider or provider == "mistral"):
-            try:
-                return self._call_mistral_function(
-                    image_b64, 
-                    prompt, 
-                    model or "ministral-14b-latest"
-                )
-            except Exception as e:
-                if provider == "mistral":
-                    raise
-                # Fallback to JSON mode
-        
+        # Provider priority: forced -> nvidia (if available) -> mistral -> gemini
         providers_to_try = []
         if provider:
             providers_to_try = [provider]
-        elif self._rate_limiter:
-            available = self._rate_limiter.get_next_available_provider()
-            if available:
-                providers_to_try = [available]
-            providers_to_try.extend(["mistral", "gemini"])
         else:
-            providers_to_try = ["mistral", "gemini"]
+            # NVIDIA first (you have this key)
+            if self._nvidia_api_key:
+                providers_to_try = ["nvidia"]
+            elif use_function_calling and self._mistral_api_key:
+                providers_to_try = ["mistral"]
+            providers_to_try.extend(["gemini"])
         
         seen = []
         for p in providers_to_try:
@@ -262,7 +289,9 @@ class MultiProviderAIClient:
                 
             for attempt in range(self._max_retries + 1):
                 try:
-                    if p == "mistral":
+                    if p == "nvidia":
+                        result = self._call_nvidia_vision(image_b64, prompt, model or "meta/llama-3.2-90b-vision-instruct")
+                    elif p == "mistral":
                         result = self._call_mistral(image_b64, prompt, model or "pixtral-12b")
                     elif p == "gemini":
                         result = self._call_gemini(image_b64, prompt, model or "gemini-2.0-flash")
@@ -272,7 +301,9 @@ class MultiProviderAIClient:
                     if self._rate_limiter:
                         self._rate_limiter.record_request(p)
                     
-                    return {**result, "parsed": self._parse_json_response(result["text"])}
+                    if "text" in result:
+                        return {**result, "parsed": self._parse_json_response(result["text"])}
+                    return result
                     
                 except Exception as e:
                     last_error = str(e)

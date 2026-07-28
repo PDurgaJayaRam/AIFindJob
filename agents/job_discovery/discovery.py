@@ -70,39 +70,16 @@ class JobDiscoveryAgent:
                 print(f"Browser agent stderr: {result.stderr[:500]}", flush=True)
 
         except subprocess.TimeoutExpired:
-            logger.warning("Browser agent timed out (180s), using fallback")
+            logger.warning("Browser agent timed out (600s) - scraping failed, no fake data fallback")
+            # Do NOT return sample jobs - alert instead
+            raise RuntimeError(f"Job discovery timed out after 600s - no jobs scraped for '{query}' in '{location}'")
         except Exception as e:
-            print(f"Browser agent error: {e}", flush=True)
+            logger.error(f"Browser agent error: {e}")
+            # Do NOT return sample jobs - alert instead
+            raise RuntimeError(f"Job discovery failed: {e}")
 
-        return self._get_sample_jobs(query, location, max_results)
-
-    def _get_sample_jobs(self, query: str, location: str, limit: int) -> List[Dict]:
-        return [
-            {
-                "title": f"{query} Developer - Fresher", "company": "Tech Corp India",
-                "location": location, "source": "sample",
-                "source_url": "https://www.indeed.com/jobs", "apply_url": "https://www.indeed.com/jobs",
-                "salary": "3-5 LPA", "experience_required": "0-1 years",
-                "skills_required": ["Python", "SQL"], "description": "",
-                "remote": False, "walk_in": True, "internship": False,
-            },
-            {
-                "title": f"Junior {query} Engineer", "company": "Data Insights Pvt Ltd",
-                "location": location, "source": "sample",
-                "source_url": "https://www.naukri.com", "apply_url": "https://www.naukri.com",
-                "salary": "4-6 LPA", "experience_required": "0-2 years",
-                "skills_required": ["Python", "SQL"], "description": "",
-                "remote": False, "walk_in": False, "internship": False,
-            },
-            {
-                "title": f"{query} Intern", "company": "StartupHub",
-                "location": location, "source": "sample",
-                "source_url": "https://www.linkedin.com/jobs", "apply_url": "https://www.linkedin.com/jobs",
-                "salary": "2-3 LPA", "experience_required": "Fresher",
-                "skills_required": ["Python"], "description": "",
-                "remote": True, "walk_in": False, "internship": True,
-            },
-        ][:limit]
+        # Should not reach here - errors raise exceptions above
+        return []
 
     async def fetch_job_details(self, job_url: str) -> Dict[str, Any]:
         return {"description": ""}

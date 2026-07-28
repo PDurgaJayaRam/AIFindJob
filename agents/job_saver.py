@@ -159,8 +159,7 @@ class JobSaver:
                     except:
                         pass
                 if not posted_dt and job_data.get("posted_text"):
-                    from agents.browser_agent.autonomous_agent import _parse_posted_date
-                    posted_dt = _parse_posted_date(job_data["posted_text"])
+                    posted_dt = self._parse_posted_date(job_data["posted_text"])
 
                 job = Job(
                     user_id=user_id,
@@ -265,6 +264,82 @@ class JobSaver:
                 "low_ats": low_ats,
                 "avg_ats": round(sum(j.ats_score or 0 for j in all_jobs) / max(total, 1), 1)
             }
+
+    @staticmethod
+    def _parse_posted_date(text: str) -> Optional[datetime]:
+        """Convert relative/absolute date text to datetime. Returns None if unrecognizable."""
+        if not text:
+            return None
+        t = text.strip().lower()
+        now = datetime.utcnow()
+
+        # Relative patterns: "2 days ago", "3 hours ago", "5 weeks ago", "1 month ago"
+        m = re.search(r'(\d+)\s*(minute|hour|day|week|month)s?\s*ago', t)
+        if m:
+            num = int(m.group(1))
+            unit = m.group(2)
+            if unit == 'minute':
+                return now - timedelta(minutes=num)
+            elif unit == 'hour':
+                return now - timedelta(hours=num)
+            elif unit == 'day':
+                return now - timedelta(days=num)
+            elif unit == 'week':
+                return now - timedelta(weeks=num)
+            elif unit == 'month':
+                return now - timedelta(days=num * 30)
+
+        # "just posted", "today", "just now"
+        if any(w in t for w in ['just posted', 'just now', 'today']):
+            return now
+
+        # "yesterday"
+        if 'yesterday' in t:
+            return now - timedelta(days=1)
+
+        # Absolute: "15 May", "May 15", "15 May 2026", "May 15, 2026"
+        months = {'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+                  'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12}
+        # "15 May 2026" or "15 May"
+        m = re.search(r'(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s,]*(\d{4})?', t)
+        if m:
+            day = int(m.group(1))
+            month = months.get(m.group(2)[:3])
+            year = int(m.group(3)) if m.group(3) else now.year
+            try:
+                return datetime(year, month, day)
+            except:
+                pass
+
+        # "May 15, 2026" or "May 15"
+        m = re.search(r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2})[\s,]*(\d{4})?', t)
+        if m:
+            month = months.get(m.group(1)[:3])
+            day = int(m.group(2))
+            year = int(m.group(3)) if m.group(3) else now.year
+            try:
+                return datetime(year, month, day)
+            except:
+                pass
+
+        # "posted X days ago" without the "ago" (some portals)
+        m = re.search(r'posted\s+(\d+)\s*(minute|hour|day|week|month)', t)
+        if m:
+            num = int(m.group(1))
+            unit = m.group(2)
+            if unit == 'day':
+                return now - timedelta(days=num)
+            elif unit == 'week':
+                return now - timedelta(weeks=num)
+            elif unit == 'hour':
+                return now - timedelta(hours=num)
+
+        # Glassdoor short format: "2d", "30d+", "6d ago"
+        m = re.search(r'(\d+)\s*d(?:\+|\s|$|ago)', t)
+        if m:
+            return now - timedelta(days=int(m.group(1)))
+
+        return None
 
     def _quick_score(self, job: Dict, resume_text: str, resume_skills: List[str] = None) -> float:
         """Fast keyword-based ATS score."""

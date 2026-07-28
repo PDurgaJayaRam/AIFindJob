@@ -144,9 +144,30 @@ async def trigger_all_portals_scrape(payload: ScrapeAllIn | None = None, backgro
     """
     import os
     
-    query = payload.query if payload else os.getenv("SCRAPE_QUERY", "developer")
-    location = payload.location if payload else os.getenv("SCRAPE_LOCATION", "India")
+    query = payload.query if payload else None
+    location = payload.location if payload else None
     exp_level = payload.experience_level if payload else "fresher"
+    
+    # If no query/location provided, fetch from user profile
+    if not query or not location:
+        try:
+            import sqlite3, json
+            db_path = os.path.join(os.path.dirname(__file__), "..", "data", "career_agent.db")
+            conn = sqlite3.connect(db_path)
+            row = conn.execute("SELECT desired_roles, desired_locations FROM user_preferences ORDER BY id DESC LIMIT 1").fetchone()
+            conn.close()
+            if row:
+                roles = json.loads(row[0]) if row[0] else []
+                locations = json.loads(row[1]) if row[1] else []
+                if not query and roles:
+                    query = roles[0]
+                if not location and locations:
+                    location = locations[0]
+        except Exception:
+            pass
+    
+    query = query or "jobs"
+    location = location or "India"
     
     if background_tasks:
         background_tasks.add_task(_run_all_portals_sync, query, location, exp_level)
@@ -238,12 +259,12 @@ def _scrape_single_portal(portal_name: str):
 
 
 async def _scrape_single_portal_async(portal_name: str):
-    """Async scrape implementation."""
+    """Async scrape implementation — uses BrowserPoolSource which auto-fetches from DB."""
     try:
         from ingestion.sources.browser_pool import BrowserPoolSource
-        source = BrowserPoolSource(query="developer", location="India")
-        # Could implement single-portal scraping here if needed
-        # For now, just log
-        logger.info(f"Single portal scrape requested for: {portal_name}")
+        source = BrowserPoolSource()
+        query = source.query
+        location = source.location
+        logger.info(f"Single portal scrape for {portal_name}: query='{query}', location='{location}'")
     except Exception as e:
         logger.error(f"Single portal scrape failed for {portal_name}: {e}")

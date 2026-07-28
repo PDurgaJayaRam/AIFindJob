@@ -9,7 +9,24 @@ export default defineConfig({
       '/ingestion': 'http://localhost:8000',
       '/auth': 'http://localhost:8000',
       '/health': 'http://localhost:8000',
-      '/me': 'http://localhost:8000',
+      '/me': {
+        target: 'http://localhost:8000',
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq, req) => {
+            // Disable buffering for SSE endpoints
+            if (req.url.includes('/events')) {
+              proxyReq.setHeader('Accept', 'text/event-stream');
+            }
+          });
+          proxy.on('proxyRes', (proxyRes, req) => {
+            if (req.url.includes('/events')) {
+              proxyRes.headers['cache-control'] = 'no-cache';
+              proxyRes.headers['connection'] = 'keep-alive';
+              proxyRes.headers['x-accel-buffering'] = 'no';
+            }
+          });
+        },
+      },
       '/resume': 'http://localhost:8000',
       '/live-scraper': 'http://localhost:8000',
       '/chat': 'http://localhost:8000',
@@ -22,6 +39,7 @@ export default defineConfig({
       '/admin/scrape': 'http://localhost:8000',
       '/admin/trigger': 'http://localhost:8000',
       '/admin/login': 'http://localhost:8000',
+      '/social': 'http://localhost:8000',
     },
   },
 });

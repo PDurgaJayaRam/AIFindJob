@@ -451,18 +451,19 @@ Return ONLY the JSON array, no explanation:
                     exp_match = re.search(r'(\d+)\s*[-–+]\s*(\d*)', exp)
                     if exp_match:
                         min_exp = int(exp_match.group(1))
-                        # If min experience is greater than 0, reject unless title says fresher
-                        if min_exp > 0:
+                        # If min experience is greater than 1, reject unless title says fresher
+                        if min_exp >= 2:
                             if not is_fresher_title:
                                 continue
-                        # If min is 0, accept
+                        # If min is 0-1, accept (allow jobs that don't explicitly say fresher)
                     elif any(w in exp for w in ["2+", "3+", "4+", "5+", "6+", "7+", "8+", "9+", "10+"]):
                          if not is_fresher_title:
                             continue
                     else:
-                        # If experience is "Not specified" or empty, only allow if title indicates fresher
-                        if not is_fresher_title:
-                            continue
+                        # If experience is "Not specified" or empty - ALLOW THROUGH
+                        # Don't reject - these may be real jobs with no experience filter
+                        # The autonomous_agent._filter_jobs will do more sophisticated filtering
+                        pass
 
                 # If user selected specific years (e.g., 2 years)
                 elif exp_years is not None and exp_years > 0:

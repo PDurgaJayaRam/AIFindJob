@@ -12,6 +12,7 @@ about /me/resume + /me/matches; this router stays about /me/preferences +
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import List, Optional
 
@@ -119,6 +120,18 @@ def build_router(get_current_user):
             ).scalar_one_or_none()
 
         experience_years = float(resume_row.experience_years) if resume_row and resume_row.experience_years is not None else 0.0
+        
+        # Use actual resume content analysis for experience level, not just the number
+        detected_level = derive_level(experience_years)
+        if resume_row and resume_row.text_content:
+            try:
+                from resume_tailor.resume_parser import analyze_experience_level
+                analysis = analyze_experience_level(resume_row.text_content)
+                detected_level = analysis["level"]
+                logger.info("Resume analysis: level=%s, reasons=%s", detected_level, analysis.get("reasons", [])[:3])
+            except Exception as e:
+                logger.warning("Resume analysis failed: %s", e)
+        
         return PreferencesOut(
             desired_roles=list(pref_row.desired_roles) if pref_row and pref_row.desired_roles else [],
             desired_locations=list(pref_row.desired_locations) if pref_row and pref_row.desired_locations else [],
@@ -126,7 +139,7 @@ def build_router(get_current_user):
             min_salary=pref_row.min_salary if pref_row else None,
             experience_years=experience_years,
             skills=list(resume_row.skills) if resume_row and resume_row.skills else [],
-            experience_level=derive_level(experience_years),
+            experience_level=detected_level,
         )
 
     @router.put("/preferences", response_model=PreferencesOut)
@@ -166,22 +179,33 @@ def build_router(get_current_user):
                     text_content="",
                     skills=payload.skills,
                     experience_years=payload.experience_years,
+                    parsed_data={
+                        "is_fresher": payload.experience_years <= 0,
+                        "target_roles": payload.desired_roles,
+                    },
                 )
                 session.add(resume_row)
             else:
                 resume_row.experience_years = payload.experience_years
                 resume_row.skills = payload.skills
+                # Keep parsed_data in sync so matching reads correct is_fresher + target_roles
+                parsed = dict(resume_row.parsed_data) if resume_row.parsed_data else {}
+                parsed["is_fresher"] = payload.experience_years <= 0
+                parsed["target_roles"] = payload.desired_roles
+                resume_row.parsed_data = parsed
 
             await session.commit()
             experience_years = float(resume_row.experience_years)
             level = derive_level(experience_years)
 
-        # Side effect: re-scrape with the new fields. Fire-and-forget.
+        # Side effect: use collaborative scraping - trigger background job if pool is empty
+        # Return immediately with existing jobs, don't wait!
         role = payload.desired_roles[0] if payload.desired_roles else None
         location = payload.desired_locations[0] if payload.desired_locations else None
-        scrape = {"enqueued": False, "task_id": ""}
+
+        # Fire-and-forget background scrape for this user's profile
         if role and location:
-            scrape = _enqueue_scrape(role, location, level)
+            asyncio.create_task(_background_scrape_for_profile(role, location, level))
 
         return PreferencesOut(
             desired_roles=payload.desired_roles,
@@ -240,3 +264,16 @@ def build_router(get_current_user):
         )
 
     return router
+
+
+async def _background_scrape_for_profile(role: str, location: str, experience_level: str):
+    """Background scrape that doesn't block the user request."""
+    try:
+        from ingestion.engine import run_browser_pool_source
+        await run_browser_pool_source(
+            query=role,
+            location=location,
+            experience_level=experience_level,
+        )
+    except Exception as e:
+        logger.warning(f"Background scrape failed: {e}")

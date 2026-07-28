@@ -42,7 +42,7 @@ class User(Base):
 
 class Resume(Base):
     __tablename__ = "resumes"
-
+    
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     filename = Column(String(500))
@@ -50,6 +50,11 @@ class Resume(Base):
     skills = Column(JSON, default=list)
     experience_years = Column(Float)
     parsed_data = Column(JSON, default=dict)
+    
+    # Structured resume sections for optimization
+    parsed_sections = Column(JSON, default=dict)
+    format_preserved = Column(JSON, default=dict)
+    
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     user = relationship("User", back_populates="resumes")
@@ -86,6 +91,7 @@ class Job(Base):
     apply_url = Column(Text)
     source = Column(String(100))
     source_url = Column(Text)
+    external_id = Column(String(200), nullable=True)
     remote = Column(Boolean, default=False)
     walk_in = Column(Boolean, default=False)
     internship = Column(Boolean, default=False)
@@ -132,6 +138,18 @@ class Recruiter(Base):
     linkedin_url = Column(Text)
     email = Column(String(500))
     github = Column(String(500))
+    phone = Column(String(500))
+    photo_url = Column(Text)
+    location = Column(String(500))
+    relevance = Column(String(20))
+    skills = Column(JSON, default=list)
+    contact_type = Column(String(50))
+    is_recruiter = Column(Boolean, default=False)
+    is_hiring_manager = Column(Boolean, default=False)
+    verified = Column(Boolean, default=False)
+    outreach_linkedin = Column(Text)
+    outreach_email_subject = Column(Text)
+    outreach_email_body = Column(Text)
     source = Column(String(100))
     confidence = Column(Float, default=0.5)
     job_id = Column(Integer, ForeignKey("jobs.id"), nullable=True)
@@ -231,17 +249,29 @@ class JobMatch(Base):
 
 
 class CustomResume(Base):
-    """Custom generated resumes per job"""
+    """Custom generated resumes per job with optimization analysis"""
     __tablename__ = "custom_resumes"
     
     id = Column(Integer, primary_key=True, index=True)
     job_id = Column(Integer, ForeignKey("jobs.id"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     
-    # Resume content
+    # Original resume reference
+    original_resume_text = Column(Text)
+    original_resume_sections = Column(JSON, default=dict)
+    
+    # Optimized resume content
     resume_text = Column(Text)
     resume_pdf_path = Column(String(500))
     resume_docx_path = Column(String(500))
+    
+    # Optimization analysis
+    match_score = Column(Float, default=0.0)
+    matching_skills = Column(JSON, default=list)
+    missing_skills = Column(JSON, default=list)
+    recommended_skills = Column(JSON, default=list)
+    optimization_suggestions = Column(JSON, default=list)
+    job_analysis = Column(JSON, default=dict)
     
     # Metadata
     ats_optimized = Column(Boolean, default=True)
@@ -325,4 +355,15 @@ class ApplicationSubmission(Base):
     # Relationships
     job = relationship("Job")
     user = relationship("User")
+
+
+class ScrapedState(Base):
+    """Tracks which portal+query+page combinations have been scraped."""
+    __tablename__ = "scraped_state"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    portal = Column(String(100), nullable=False)
+    query = Column(String(500), nullable=False)
+    page_num = Column(Integer, default=0)
+    scraped_at = Column(DateTime, default=datetime.datetime.utcnow)
 

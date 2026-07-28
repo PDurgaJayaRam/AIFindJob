@@ -127,6 +127,31 @@ class AIClient:
         content = resp.choices[0].message.content
         if not content or not content.strip():
             raise RuntimeError(f"{provider} returned empty response")
+        # Strip markdown code blocks if present (NVIDIA returns ```json ... ```)
+        content = content.strip()
+        if content.startswith("```"):
+            # Remove opening ```json or ``` marker
+            first_newline = content.find("\n")
+            if first_newline > 0:
+                content = content[first_newline + 1:]
+            # Remove closing ```
+            if content.endswith("```"):
+                content = content[:-3].strip()
+        # Extract JSON if model returned extra text
+        if json_mode:
+            # Try array first, then object
+            first_bracket = content.find("[")
+            first_brace = content.find("{")
+            if first_bracket >= 0 and (first_brace < 0 or first_bracket < first_brace):
+                # Array
+                last_bracket = content.rfind("]")
+                if last_bracket > first_bracket:
+                    content = content[first_bracket:last_bracket + 1]
+            elif first_brace >= 0:
+                # Object
+                last_brace = content.rfind("}")
+                if last_brace > first_brace:
+                    content = content[first_brace:last_brace + 1]
         return content
 
 

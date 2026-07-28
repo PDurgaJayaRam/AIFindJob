@@ -17,12 +17,19 @@ class JobRecord:
     source_url: str = ""
     apply_url: str = ""
     salary: str = ""
+    experience_required: str = ""
+    external_id: str = ""
     remote: bool = False
+    walk_in: bool = False
+    internship: bool = False
     skills_required: list[str] = field(default_factory=list)
     posted_date: Optional[datetime.datetime] = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     def dedup_key(self) -> str:
+        # Prefer a stable source-provided id (best dedup, survives URL churn).
+        if self.external_id:
+            return f"id:{self.source.strip().lower()}:{self.external_id.strip().lower()}"
         if self.source_url:
             return f"url:{self.source_url.strip().lower()}"
         if self.apply_url:

@@ -15,8 +15,26 @@ class SocialIntelSource(BaseIngestionSource):
     name = "social_intel"
     
     def __init__(self, keywords: list[str] = None, location: str = "India"):
-        self.keywords = keywords or os.getenv("SCRAPE_QUERY", "python java sql developer").split()
+        if not keywords:
+            # Fetch from user profile in DB
+            keywords = self._fetch_keywords_from_db()
+        self.keywords = keywords or os.getenv("SCRAPE_QUERY", "").split()
         self.location = location or os.getenv("SCRAPE_LOCATION", "India")
+
+    @staticmethod
+    def _fetch_keywords_from_db():
+        try:
+            import sqlite3, json
+            db_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "career_agent.db")
+            conn = sqlite3.connect(db_path)
+            row = conn.execute("SELECT desired_roles FROM user_preferences ORDER BY id DESC LIMIT 1").fetchone()
+            conn.close()
+            if row and row[0]:
+                roles = json.loads(row[0])
+                return roles[:3] if roles else []
+        except Exception:
+            pass
+        return []
     
     async def fetch(self) -> List[JobRecord]:
         """Fetch jobs from all social platforms."""

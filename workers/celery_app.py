@@ -9,7 +9,7 @@ celery_app = Celery(
     "combo_ai_agent",
     broker=REDIS_URL,
     backend=REDIS_URL,
-    include=["workers.tasks"],
+    include=["workers.tasks", "workers.tasks_browser"],
 )
 
 celery_app.conf.update(
@@ -20,11 +20,16 @@ celery_app.conf.update(
     enable_utc=True,
 )
 
-# Beat schedule for continuous job scraping (runs every 30 minutes)
+# Beat schedule for continuous job scraping (runs every 2 hours)
 celery_app.conf.beat_schedule = {
     "continuous-job-scrape": {
         "task": "workers.tasks.continuous_scrape_task",
         "schedule": crontab(minute="*/30"),  # Every 30 minutes
+        "args": (),
+    },
+    "browser-pool-scrape": {
+        "task": "workers.tasks_browser.browser_scrape_task",
+        "schedule": crontab(minute=0, hour="*/2"),  # Every 2 hours
         "args": (),
     },
 }

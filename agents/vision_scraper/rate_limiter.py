@@ -16,7 +16,10 @@ class RateLimiter:
     """Manages rate limits for multiple AI providers using sliding window."""
 
     def __init__(self):
+        # NVIDIA has much higher rate limits (no hard limit published, conservative estimate)
+        # From testing: NVIDIA allows ~20-30 RPM for vision models
         self._providers: Dict[str, ProviderRateLimit] = {
+            "nvidia": ProviderRateLimit(max_requests=30, window_seconds=60),
             "mistral": ProviderRateLimit(max_requests=2, window_seconds=60),
             "gemini": ProviderRateLimit(max_requests=15, window_seconds=60),
         }
@@ -68,8 +71,9 @@ class RateLimiter:
         return max(0.0, wait_time)
 
     def get_next_available_provider(self) -> Optional[str]:
-        """Get the next provider that has capacity, prioritizing mistral then gemini."""
-        priority_order = ["mistral", "gemini"]
+        """Get the next provider that has capacity, prioritizing nvidia then mistral then gemini."""
+        # Priority: NVIDIA (30 RPM) > Mistral (2 RPM) > Gemini (15 RPM)
+        priority_order = ["nvidia", "mistral", "gemini"]
         for provider in priority_order:
             if provider in self._providers and self.check_availability(provider):
                 return provider

@@ -617,12 +617,12 @@ Respond with ONLY a JSON object:
                     try:
                         portal_jobs = await asyncio.wait_for(
                             self._search_single_portal(portal, kw, location, 50, seen_urls),
-                            timeout=180,  # 3 min per portal — visiting all detail pages takes time
+                            timeout=120,  # 2 min per portal — keep under overall budget
                         )
                         all_jobs.extend(portal_jobs)
                         self._log(f"Portal {portal} [{kw}]: found {len(portal_jobs)} jobs (total: {len(all_jobs)})")
                     except asyncio.TimeoutError:
-                        self._log(f"Portal {portal} [{kw}]: timed out after 180s, moving on")
+                        self._log(f"Portal {portal} [{kw}]: timed out after 120s, moving on")
                     except Exception as e:
                         err_msg = str(e)
                         self._log(f"Portal {portal} [{kw}]: failed with {type(e).__name__}: {err_msg[:100]}")
@@ -1084,19 +1084,22 @@ Respond with ONLY a JSON object:
             if "help us protect glassdoor" in title:
                 continue
 
-            # Skip non-tech jobs
-            if any(pattern in title for pattern in non_tech_patterns):
+            # Check if job matches user's search keywords (priority check)
+            user_keyword_list = [k.strip().lower() for k in keywords.split(",") if k.strip()]
+            has_user_keyword = any(kw in title or kw in combined for kw in user_keyword_list)
+
+            # Skip non-tech jobs ONLY if they don't match user's search keywords
+            # This allows users to search for non-tech roles like "Graphic Designer"
+            if not has_user_keyword and any(pattern in title for pattern in non_tech_patterns):
                 continue
 
             # Require at least one tech keyword in the TITLE, OR user's search keyword
             has_tech_keyword = any(kw in title for kw in tech_keywords)
-            user_keyword_list = [k.strip().lower() for k in keywords.split(",") if k.strip()]
-            has_user_keyword = any(kw in title or kw in combined for kw in user_keyword_list)
 
             # If "engineer" in title, require a tech qualifier (software engineer OK, civil engineer NOT)
             if "engineer" in title:
                 has_tech_qualifier = any(q in title for q in engineer_requires_tech)
-                if not has_tech_qualifier:
+                if not has_tech_qualifier and not has_user_keyword:
                     continue
             elif not has_tech_keyword and not has_user_keyword:
                 continue

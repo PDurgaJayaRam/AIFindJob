@@ -267,7 +267,7 @@ class BrowserController:
                 try:
                     from agents.browser_agent.live_monitor import live_monitor
                     live_monitor.update_status(url=url, action=f"Loaded: {url[:50]}...")
-                    live_monitor.set_screenshot(self.page)
+                    await live_monitor.set_screenshot(self.page)
                 except Exception:
                     pass
 
@@ -661,7 +661,7 @@ class BrowserController:
             seen_titles.add(title_key)
             validated.append(job)
 
-        return validated[:30]
+        return validated[:50]  # Increased from 30 to 50 for better coverage
 
     async def _extract_linkedin_jobs(self) -> List[Dict[str, Any]]:
         """Extract LinkedIn jobs - uses /jobs/view/<id> pattern."""
@@ -778,7 +778,7 @@ class BrowserController:
             if key and key not in seen:
                 seen.add(key)
                 validated.append(job)
-        return validated[:30]
+        return validated[:50]  # Increased from 30 to 50 for better coverage
 
     async def _extract_indeed_jobs(self) -> List[Dict[str, Any]]:
         """Extract Indeed jobs - uses job listing URL patterns."""

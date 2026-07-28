@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { fetchAdminOverview, fetchLiveScraperStatus, startLiveScraper, stopLiveScraper, triggerAllPortalsScrape, getPortalStatus, triggerSpecificPortal } from '../lib/api.js';
+import { fetchAdminOverview, fetchLiveScraperStatus, startLiveScraper, stopLiveScraper, triggerAllPortalsScrape, getPortalStatus, triggerSpecificPortal, fetchMyPreferences } from '../lib/api.js';
 
 export default function Admin() {
   const [data, setData] = useState(null);
@@ -12,6 +12,7 @@ export default function Admin() {
   const [portalStatus, setPortalStatus] = useState(null);
   const [triggers, setTriggers] = useState({});
   const [contactStats, setContactStats] = useState({ totalContacts: 0, companiesWithContacts: 0 });
+  const [userProfile, setUserProfile] = useState({ role: 'developer', location: 'India' });
 
   // Fetch admin overview (pool + sources)
   useEffect(() => {
@@ -31,6 +32,20 @@ export default function Admin() {
   // Portal status
   useEffect(() => {
     getPortalStatus().then(setPortalStatus).catch(() => {});
+  }, []);
+
+  // Fetch user profile for scrape queries
+  useEffect(() => {
+    fetchMyPreferences()
+      .then((pref) => {
+        if (pref?.desired_roles?.length > 0) {
+          setUserProfile({
+            role: pref.desired_roles[0],
+            location: pref.desired_locations?.[0] || 'India',
+          });
+        }
+      })
+      .catch(() => {});
   }, []);
 
   // Check if live scraper is already running on backend when Admin page loads
@@ -301,7 +316,7 @@ export default function Admin() {
             
             <div className="flex flex-col md:flex-row gap-4 mb-4">
               <button
-                onClick={() => triggerAllPortalsScrape("developer", "India")}
+                onClick={() => triggerAllPortalsScrape(userProfile.role, userProfile.location)}
                 className="px-4 py-2 rounded-lg bg-gradient-to-r from-nebula to-aqua text-ink font-semibold hover:opacity-90 transition-opacity"
               >
                 🔁 Trigger All Portals Now

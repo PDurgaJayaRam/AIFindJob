@@ -69,8 +69,27 @@ class AgentOrchestrator:
             )
             result.jobs_discovered = len(raw_jobs)
         except Exception as e:
-            result.errors.append(f"Job discovery failed: {e}")
-            return result
+            # Try direct AutonomousAgent as fallback (avoids subprocess issues)
+            result.errors.append(f"Job discovery subprocess failed: {e}, trying direct method")
+            try:
+                from agents.browser_agent.autonomous_agent import AutonomousAgent
+                import os
+                agent = AutonomousAgent(headless=False, proxy=os.environ.get("BROWSER_PROXY"))
+                is_fresher = True  # Default for freshers
+                raw_jobs = await agent.run_task(
+                    task=f"Search for {keywords} jobs in {locations}",
+                    target_count=max_jobs,
+                    keywords=",".join(keywords),
+                    is_fresher=is_fresher,
+                    location=",".join(locations),
+                    portals=["naukri", "indeed", "shine", "foundit", "timesjobs"],
+                    overall_timeout=300,
+                )
+                result.jobs_discovered = len(raw_jobs)
+                result.errors.append(f"Direct AutonomousAgent succeeded with {len(raw_jobs)} jobs")
+            except Exception as fallback_e:
+                result.errors.append(f"Job discovery failed (both methods): {fallback_e}")
+                return result
 
         # 2. Analyze & match
         matched_jobs = []

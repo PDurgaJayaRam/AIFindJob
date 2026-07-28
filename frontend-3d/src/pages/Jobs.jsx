@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { fetchPoolJobs, fetchIngestionStatus, logout, getToken, seedDemoJobs } from '../lib/api.js';
+import { fetchPoolJobs, fetchIngestionStatus, logout, getToken } from '../lib/api.js';
+
 import { useUserProfile } from '../context/UserProfileContext.jsx';
 import JobCard from '../components/JobCard.jsx';
 
@@ -11,7 +12,6 @@ export default function Jobs() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [ingestionStatus, setIngestionStatus] = useState(null);
-  const [seeding, setSeeding] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -60,20 +60,6 @@ export default function Jobs() {
     setProfile(null);
     setNeedsOnboarding(false);
     navigate('/login');
-  };
-
-  const handleSeedDemoJobs = async () => {
-    setSeeding(true);
-    try {
-      await seedDemoJobs();
-      // Refresh jobs after seeding
-      const data = await fetchPoolJobs({ limit: 48 });
-      setJobs(data.jobs || []);
-    } catch (e) {
-      setError(`Failed to seed demo jobs: ${e.message}`);
-    } finally {
-      setSeeding(false);
-    }
   };
 
   return (
@@ -215,22 +201,6 @@ export default function Jobs() {
 
       {!loading && !error && jobs.length > 0 && (
         <>
-          {/* Show low relevance warning and demo seed option */}
-          {ingestionStatus?.sources && !ingestionStatus.sources.some(s => s.name?.includes('naukri') || s.name?.includes('india')) && (
-            <div className="glass rounded-xl p-4 mb-6 border border-amber-500/30 ease-elastic">
-              <p className="text-amber-300 text-sm mb-3">
-                ⚠️ Low relevance jobs shown. Use demo mode to see India tech jobs.
-              </p>
-              <button
-                onClick={handleSeedDemoJobs}
-                disabled={seeding}
-                className="px-4 py-2 bg-gradient-to-r from-nebula to-aqua text-ink rounded-full text-sm font-semibold hover:opacity-90 disabled:opacity-50 transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
-              >
-                {seeding ? 'Adding jobs…' : 'Seed Demo Tech Jobs'}
-              </button>
-            </div>
-          )}
-
           <div className="mb-6 flex justify-end">
             <button
               onClick={handleGetMyMatches}

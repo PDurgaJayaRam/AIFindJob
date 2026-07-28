@@ -51,18 +51,13 @@ def default_sources() -> list[BaseIngestionSource]:
 async def _existing_dedup_keys(records: Iterable[JobRecord]) -> set[str]:
     source_urls = {r.source_url for r in records if r.source_url}
     apply_urls = {r.apply_url for r in records if r.apply_url}
-    id_keys: set[str] = {f"id:{r.source.strip().lower()}:{r.external_id}"
-                         for r in records if r.external_id}
+    id_pairs = {(r.source.strip().lower(), r.external_id.strip().lower())
+                for r in records if r.external_id}
+    composite_keys = {(r.title.strip().lower(), r.company.strip().lower(), r.source.strip().lower())
+                      for r in records if not r.external_id and not r.source_url and not r.apply_url}
     existing: set[str] = set()
     async with async_session() as session:
-        if id_keys:
-            # Recover the (source, external_id) tuples for any id:key we'd find.
-            # Build a (source, external_id) lookup from the id_keys.
-            id_pairs = set()
-            for k in id_keys:
-                # k = "id:{source}:{external_id}"
-                _, src, ext = k.split(":", 2)
-                id_pairs.add((src, ext))
+        if id_pairs:
             for src, ext in id_pairs:
                 rows = await session.execute(
                     select(Job.id).where(
@@ -81,12 +76,19 @@ async def _existing_dedup_keys(records: Iterable[JobRecord]) -> set[str]:
                 select(Job.apply_url).where(Job.apply_url.in_(apply_urls))
             )
             existing.update(f"apply:{u.strip().lower()}" for u in rows.scalars() if u)
-        rows = await session.execute(select(Job.title, Job.company, Job.source))
-        for title, company, source in rows.all():
-            existing.add(
-                f"composite:{(title or '').strip().lower()}|"
-                f"{(company or '').strip().lower()}|{(source or '').strip().lower()}"
+        if composite_keys:
+            rows = await session.execute(
+                select(Job.title, Job.company, Job.source).where(
+                    Job.source_url.is_(None), Job.external_id.is_(None)
+                )
             )
+            db_composites = {
+                ((t or '').strip().lower(), (c or '').strip().lower(), (s or '').strip().lower())
+                for t, c, s in rows.all()
+            }
+            for tc, cc, sc in composite_keys:
+                if (tc, cc, sc) in db_composites:
+                    existing.add(f"composite:{tc}|{cc}|{sc}")
     return existing
 
 
@@ -222,6 +224,13 @@ async def run_source(source: BaseIngestionSource) -> dict:
             })
         except ImportError:
             pass
+        # Notify matches page so it can auto-refresh
+        if new_count > 0:
+            try:
+                from matching.router import notify_matches_updated
+                notify_matches_updated(new_count)
+            except ImportError:
+                pass
         logger.info("Source %s: fetched=%d new=%d", source.name, len(records), new_count)
         return {"source": source.name, "fetched": len(records), "new": new_count}
     except Exception as exc:
@@ -242,10 +251,8 @@ async def run_source(source: BaseIngestionSource) -> dict:
 
 async def run_all_sources(sources: list[BaseIngestionSource] | None = None) -> list[dict]:
     sources = sources or default_sources()
-    results = []
-    for source in sources:
-        results.append(await run_source(source))
-    return results
+    results = await asyncio.gather(*(run_source(s) for s in sources), return_exceptions=True)
+    return [r for r in results if isinstance(r, dict)]
 
 
 async def run_browser_pool_source(
@@ -293,5 +300,12 @@ async def run_browser_pool_source(
             if s:
                 s["jobs_new"] = per_portal
     status_store.record(source.name, ok=True, jobs_fetched=len(records), jobs_new=new_count)
+    # Notify matches page so it can auto-refresh
+    if new_count > 0:
+        try:
+            from matching.router import notify_matches_updated
+            notify_matches_updated(new_count)
+        except ImportError:
+            pass
     logger.info("Browser pool: fetched=%d new=%d", len(records), new_count)
     return [{"source": source.name, "fetched": len(records), "new": new_count}]

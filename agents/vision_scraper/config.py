@@ -7,7 +7,13 @@ from typing import Optional
 
 @dataclass
 class RateLimitConfig:
-    """Rate limit settings for AI providers."""
+    """Rate limit settings for AI providers.
+    
+    NVIDIA: ~30 RPM (free tier, best for vision)
+    Mistral: 2 RPM (limited free tier)
+    Gemini: 15 RPM (free tier)
+    """
+    nvidia_rpm: int = 30
     mistral_rpm: int = 2
     gemini_rpm: int = 15
     window_seconds: int = 60
@@ -52,6 +58,7 @@ class ScrapingConfig:
         """Load configuration from environment variables."""
         return cls(
             rate_limit=RateLimitConfig(
+                nvidia_rpm=int(os.getenv("VISION_NVIDIA_RPM", "30")),
                 mistral_rpm=int(os.getenv("VISION_MISTRAL_RPM", "2")),
                 gemini_rpm=int(os.getenv("VISION_GEMINI_RPM", "15")),
             ),
@@ -73,6 +80,8 @@ class ScrapingConfig:
     def validate(self) -> list:
         """Validate configuration. Returns list of errors."""
         errors = []
+        if self.rate_limit.nvidia_rpm <= 0:
+            errors.append("nvidia_rpm must be positive")
         if self.rate_limit.mistral_rpm <= 0:
             errors.append("mistral_rpm must be positive")
         if self.rate_limit.gemini_rpm <= 0:

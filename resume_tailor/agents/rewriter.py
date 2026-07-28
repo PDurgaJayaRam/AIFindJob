@@ -11,14 +11,16 @@ from typing import Any
 
 logger = logging.getLogger("resume.agents.rewriter")
 
-REWRITER_PROMPT = """You are an expert resume writer who has helped thousands of candidates land their dream jobs.
-Your specialty is transforming weak resumes into powerful, ATS-optimized documents that get interviews.
+REWRITER_PROMPT = """You are an expert resume writer who helps candidates present their REAL experience clearly and professionally.
 
 CANDIDATE'S ORIGINAL RESUME:
 {resume_text}
 
 CANDIDATE'S SKILLS:
 {candidate_skills}
+
+CANDIDATE'S EXPERIENCE LEVEL: {experience_level}
+WHY: {experience_reasons}
 
 DIAGNOSIS FROM ATS ANALYSIS:
 {diagnosis}
@@ -30,20 +32,37 @@ TARGET JOB: {job_title} at {job_company}
 JOB DESCRIPTION KEYWORDS: {job_keywords}
 
 YOUR TASK:
-Rewrite the ENTIRE resume from scratch using Google's XYZ formula for EVERY bullet point:
-"Accomplished [X], as measured by [Y], by doing [Z]."
+Rewrite the resume to be ATS-optimized while preserving the candidate's ACTUAL experience.
 
-RULES:
-1. EVERY bullet point MUST have:
-   - A clear accomplishment (X)
-   - A measurable result or metric (Y) — use realistic estimates if exact numbers unavailable
-   - The method or action taken (Z)
-2. Work the missing keywords in NATURALLY — no keyword stuffing
-3. Use strong action verbs: Led, Built, Designed, Implemented, Optimized, Delivered, Reduced, Increased, Automated, Streamlined
-4. Kill all vague filler: "responsible for", "assisted with", "helped with", "worked on"
-5. Keep the tone professional but confident — not arrogant
-6. Quantify everything possible: time saved, money saved, users served, efficiency improved
-7. If you don't have a real number, use "X+%" or "multiple" — never fabricate specific metrics
+CRITICAL RULES — VIOLATION IS UNACCEPTABLE:
+1. PRESERVE THE CANDIDATE'S ACTUAL EXPERIENCE LEVEL:
+   - If experience_level is "fresher": This person has NEVER held a full-time job.
+     They may have done internships. They are NOT a Senior Developer, Lead, or Architect.
+     DO NOT create fake job titles, fake companies, or fake employment periods.
+     If their resume says "Intern at XYZ", keep it as "Intern at XYZ" — do NOT promote it.
+   - If experience_level is "junior": 1-2 years max. Titles must be junior-level.
+   - If experience_level is "mid": 3-5 years. Titles can be mid-level.
+   - If experience_level is "senior": 5+ years. Titles can be senior.
+2. USE THE CANDIDATE'S REAL EXPERIENCE from the original resume.
+   - You may IMPROVE wording (better action verbs, clearer descriptions).
+   - You may ADD relevant keywords from the job description NATURALLY.
+   - You MUST NOT invent new job titles, companies, or employment periods.
+3. NEVER FABRICATE METRICS. This is the most important rule.
+   - DO NOT invent percentages (e.g., "30% increase", "25% improvement").
+   - DO NOT invent numbers (e.g., "reduced errors by 40%", "saved 20 hours").
+   - If the original resume has NO metrics, keep it without metrics.
+   - Use factual descriptions only: what was built, what was done, what tools were used.
+4. PROFESSIONAL SUMMARY must be GENERIC — do NOT mention specific company names.
+   - CORRECT: "Motivated Fresher with skills in Java, SQL, and Appian"
+   - WRONG: "Seeking SQL Developer role at Gravitix Tech" — NEVER include the target company name.
+5. PRESERVE ALL SECTIONS from the original resume: Experience, Education, Projects, Certifications, Awards, Activities.
+   - Do NOT duplicate sections (e.g., do not list projects under both "Academic Projects" and "Projects").
+   - Do NOT remove sections that exist in the original.
+6. Skills should be a SINGLE comma-separated line: "Technical: Java, HTML, CSS, SQL, Appian, Python"
+   - Do NOT split into categories like "Programming:", "Frontend:", "Backend:".
+7. Work the missing keywords in NATURALLY — no keyword stuffing
+8. Use strong action verbs: Designed, Built, Implemented, Developed, Configured, Automated
+9. Kill all vague filler: "responsible for", "assisted with", "helped with", "worked on"
 
 OUTPUT FORMAT:
 Return ONLY valid JSON with this structure:
@@ -55,21 +74,15 @@ Return ONLY valid JSON with this structure:
         "linkedin": "...",
         "github": "..."
     }},
-    "professional_summary": "2-3 sentence summary tailored to this specific role, incorporating key keywords",
-    "skills": {{
-        "programming": ["skill1", "skill2"],
-        "frontend": ["skill1", "skill2"],
-        "backend": ["skill1", "skill2"],
-        "tools": ["skill1", "skill2"],
-        "databases": ["skill1", "skill2"]
-    }},
+    "professional_summary": "2-3 sentence GENERIC summary — do NOT mention any company name",
+    "skills": "Technical: skill1, skill2, skill3, ...",
     "experience": [
         {{
             "title": "JOB TITLE",
             "company": "COMPANY NAME",
             "dates": "Start - End",
             "bullets": [
-                "• Accomplished [X], as measured by [Y], by doing [Z]",
+                "• Description of what was done (NO fabricated metrics)",
                 "• ..."
             ]
         }}
@@ -86,7 +99,7 @@ Return ONLY valid JSON with this structure:
         {{
             "name": "Project Name",
             "bullets": [
-                "• Accomplished [X], as measured by [Y], by doing [Z]"
+                "• Description of what was built (NO fabricated metrics)"
             ]
         }}
     ],
@@ -94,11 +107,11 @@ Return ONLY valid JSON with this structure:
         "Certification 1",
         "Certification 2"
     ],
-    "ats_keywords_added": ["keyword1", "keyword2", ...],
-    "changes_made": ["change 1", "change 2", ...]
+    "ats_keywords_added": ["keyword1", "keyword2"],
+    "changes_made": ["change 1", "change 2"]
 }}
 
-Write the COMPLETE resume. Make it ready to submit to any employer.
+Write the COMPLETE resume with ALL sections from the original. Make it ready to submit.
 """
 
 
@@ -108,7 +121,9 @@ async def rewrite_resume(
     candidate_skills: list[str],
     diagnosis: dict[str, Any],
     recruiter_findings: dict[str, Any],
-    ai_client
+    ai_client,
+    experience_level: str = "fresher",
+    experience_reasons: list[str] = None,
 ) -> dict[str, Any]:
     """Run the Rewriter agent.
     
@@ -122,6 +137,8 @@ async def rewrite_resume(
     prompt = REWRITER_PROMPT.format(
         resume_text=resume_text[:5000] if resume_text else "No resume provided",
         candidate_skills=", ".join(candidate_skills[:30]) if candidate_skills else "Not specified",
+        experience_level=experience_level,
+        experience_reasons="; ".join(experience_reasons[:5]) if experience_reasons else "AI analyzed resume content",
         diagnosis=json.dumps(diagnosis, indent=2)[:2000] if diagnosis else "No diagnosis",
         recruiter_findings=json.dumps(recruiter_findings, indent=2)[:2000] if recruiter_findings else "No findings",
         job_title=job.get("title", "Unknown Role"),

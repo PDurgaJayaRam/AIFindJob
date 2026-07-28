@@ -4,6 +4,7 @@ import sys
 import asyncio
 import logging
 import time
+import re
 
 # Structured logging configuration
 from logging_config import setup_logging, get_recent_logs
@@ -114,20 +115,62 @@ async def lifespan(app: FastAPI):
         
         EVERY portal runs in rotation to ensure comprehensive coverage.
         No portal sleeps - all are active.
+        Uses the first user's profile to determine what to scrape.
         """
         import logging
         logger = logging.getLogger("scheduler")
         logger.info("Running scheduled global ingestion (all portals)...")
         
         try:
-            # Run all sources - this hits ALL enabled portals
-            # Add timeout wrapper to prevent hanging
-            from ingestion.engine import run_all_sources
+            # Fetch user profile for search query
+            query = None
+            location = None
+            experience_level = None
             try:
-                results = await asyncio.wait_for(run_all_sources(), timeout=600)  # 10 minute timeout
-            except asyncio.TimeoutError:
-                logger.warning("Scraping timed out after 10 minutes - some portals may not have completed")
-                return
+                from database.engine import async_session
+                from database.models import UserPreference, Resume
+                from sqlalchemy import select
+                async with async_session() as session:
+                    pref = (await session.execute(
+                        select(UserPreference).order_by(UserPreference.id.desc()).limit(1)
+                    )).scalar_one_or_none()
+                    if pref and pref.desired_roles:
+                        query = pref.desired_roles[0]
+                    if pref and pref.desired_locations:
+                        location = pref.desired_locations[0]
+                    # Get experience level from resume
+                    resume = (await session.execute(
+                        select(Resume).order_by(Resume.created_at.desc()).limit(1)
+                    )).scalar_one_or_none()
+                    if resume and resume.experience_years is not None:
+                        years = float(resume.experience_years)
+                        if years <= 0:
+                            experience_level = "fresher"
+                        elif years <= 2:
+                            experience_level = "junior"
+            except Exception as e:
+                logger.warning(f"Could not fetch user profile for scrape: {e}")
+            
+            # Run browser pool with user profile, then fall back to all sources
+            if query:
+                from ingestion.engine import run_browser_pool_source
+                try:
+                    results = await asyncio.wait_for(
+                        run_browser_pool_source(query=query, location=location, experience_level=experience_level),
+                        timeout=600
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("Browser pool scrape timed out after 10 minutes")
+                    results = []
+            else:
+                # No user profile — run all default sources
+                from ingestion.engine import run_all_sources
+                try:
+                    results = await asyncio.wait_for(run_all_sources(), timeout=600)
+                except asyncio.TimeoutError:
+                    logger.warning("Scraping timed out after 10 minutes")
+                    return
+            
             total_new = sum(r.get("new", 0) for r in results)
             logger.info(f"Scheduled ingestion complete: {results}, total_new={total_new}")
         except Exception as e:
@@ -518,8 +561,11 @@ async def _run_continuous_scrape_async():
     """Background task that runs LIVE scraping continuously across all portals.
 
     Loops forever (until _live_scraper_running is set to False).
-    Each cycle scrapes all portals, visits detail pages for descriptions,
-    saves to database via ingestion engine, waits 60 seconds, then repeats.
+    Each cycle:
+    1. Re-fetches user profile (so changes take effect immediately)
+    2. Rotates through roles, locations, and page offsets to avoid repeats
+    3. Tracks scraped URLs in database to survive restarts
+    4. Skips portals already searched with the same query+page
     """
     global _live_scraper_running
     import traceback
@@ -528,30 +574,77 @@ async def _run_continuous_scrape_async():
     from ingestion.base import JobRecord
     import os
 
-    async def _get_user_keywords():
-        """Get keywords from user preferences."""
+    async def _get_user_profile():
+        """Get all roles, locations, and experience from user preferences."""
         try:
             from database.engine import async_session
-            from database.models import UserPreference
+            from database.models import UserPreference, Resume
             from sqlalchemy import select
             
             async with async_session() as session:
-                result = await session.execute(
-                    select(UserPreference).limit(1)
-                )
-                pref = result.scalar_one_or_none()
-                if pref and pref.desired_roles:
-                    return pref.desired_roles
+                # Use most recently updated profile
+                pref = (await session.execute(
+                    select(UserPreference).order_by(UserPreference.id.desc()).limit(1)
+                )).scalar_one_or_none()
+                resume = (await session.execute(
+                    select(Resume).order_by(Resume.created_at.desc()).limit(1)
+                )).scalar_one_or_none()
+                
+                roles = list(pref.desired_roles) if pref and pref.desired_roles else []
+                locations = list(pref.desired_locations) if pref and pref.desired_locations else []
+                experience_level = None
+                if resume and resume.experience_years is not None:
+                    years = float(resume.experience_years)
+                    if years <= 0:
+                        experience_level = "fresher"
+                    elif years <= 2:
+                        experience_level = "junior"
+                
+                return roles, locations, experience_level
         except Exception:
             pass
-        return os.getenv("SCRAPE_QUERY", "python java sql developer").split(",")[:3]
+        return [], [], None
 
-    keywords_list = await _get_user_keywords()
-    keywords = " ".join(keywords_list)
-    location = os.getenv("SCRAPE_LOCATION", "Hyderabad")
+    async def _get_scraped_state():
+        """Get set of (portal, query, page) tuples already scraped this session."""
+        try:
+            from database.engine import async_session
+            from database.models import ScrapedState
+            from sqlalchemy import select
+            async with async_session() as session:
+                rows = (await session.execute(
+                    select(ScrapedState.portal, ScrapedState.query, ScrapedState.page_num)
+                )).all()
+                return {(r[0], r[1], r[2]) for r in rows}
+        except Exception:
+            pass
+        return set()
+
+    async def _save_scraped_state(portal, query, page_num):
+        """Record that we scraped this portal+query+page."""
+        try:
+            from database.engine import async_session
+            from database.models import ScrapedState
+            async with async_session() as session:
+                existing = (await session.execute(
+                    select(ScrapedState).where(
+                        ScrapedState.portal == portal,
+                        ScrapedState.query == query,
+                        ScrapedState.page_num == page_num
+                    )
+                )).scalar_one_or_none()
+                if not existing:
+                    session.add(ScrapedState(portal=portal, query=query, page_num=page_num))
+                    await session.commit()
+        except Exception:
+            pass
+
     cycle_count = 0
     total_saved = 0
     seen_urls = set()
+    # Track which (role, location, page_offset) combinations we've tried
+    search_queue = []
+    current_search_idx = 0
 
     def _normalize(text):
         return " ".join(text.lower().strip().split()) if text else ""
@@ -582,20 +675,97 @@ async def _run_continuous_scrape_async():
         
         return True
 
+    def _build_portal_urls(role, location, experience_level, page_offset=0):
+        """Build search URLs for all portals with optional page offset."""
+        from urllib.parse import quote, quote_plus
+        kw = quote(role, safe='')
+        loc = quote(location, safe='')
+        kw_dash = role.replace(" ", "-")
+        loc_dash = location.lower().replace(" ", "-")
+        
+        # Page offset param varies by portal
+        naukri_page = f"&page={page_offset + 1}" if page_offset > 0 else ""
+        indeed_start = f"&start={page_offset * 10}" if page_offset > 0 else ""
+        linkedin_start = f"&start={page_offset * 25}" if page_offset > 0 else ""
+        
+        exp_naukri = "?experience=0" if experience_level == "fresher" else ""
+        exp_indeed = "&explvl=entry_level" if experience_level == "fresher" else ""
+        exp_shine = "?experienced=0" if experience_level == "fresher" else ""
+        exp_foundit = "&experience=0" if experience_level == "fresher" else ""
+        
+        # Add page offset to first param separator
+        if naukri_page:
+            exp_naukri = exp_naukri + naukri_page if exp_naukri else f"?page={page_offset + 1}"
+        if indeed_start:
+            exp_indeed = exp_indeed + indeed_start if exp_indeed else f"&start={page_offset * 10}"
+        
+        return [
+            ("naukri", f"https://www.naukri.com/{kw_dash}-jobs-in-{loc_dash}{exp_naukri}"),
+            ("indeed", f"https://in.indeed.com/jobs?q={kw}&l={loc}{exp_indeed}"),
+            ("linkedin", f"https://www.linkedin.com/jobs/search/?keywords={kw}&location={loc}{linkedin_start}"),
+            ("shine", f"https://www.shine.com/job-search/{kw_dash}-jobs-in-{loc_dash}{exp_shine}"),
+            ("foundit", f"https://www.foundit.in/srp/results?query={kw}+{loc}{exp_foundit}"),
+        ]
+
     while _live_scraper_running:
         cycle_count += 1
         browser = None
         all_records = []
 
         try:
-            from playwright.async_api import async_playwright
+            # Re-fetch profile every cycle so changes take effect immediately
+            roles, locations, experience_level = await _get_user_profile()
+            
+            if not roles:
+                live_monitor.update_status(action=f"Cycle {cycle_count}: No user profile found. Waiting 60s...")
+                if _live_scraper_running:
+                    await asyncio.sleep(60)
+                continue
+            
+            if not locations:
+                locations = ["Hyderabad"]
 
-            headless = os.getenv("PLAYWRIGHT_HEADLESS", "true").lower() == "true"
+            # Build search queue: rotate through (role, location, page_offset)
+            # Each cycle picks the next combination to avoid repeating
+            scraped_state = await _get_scraped_state()
+            
+            # Generate all possible searches
+            all_searches = []
+            for role in roles:
+                for loc in locations:
+                    for page in range(3):  # Up to 3 pages per search
+                        search_key = (role.lower().strip(), loc.lower().strip(), page)
+                        all_searches.append(search_key)
+            
+            # Find unscraped searches
+            unscraped = [s for s in all_searches if s not in scraped_state]
+            
+            if not unscraped:
+                # All combinations scraped — clear state and start over
+                try:
+                    from database.engine import async_session
+                    from database.models import ScrapedState
+                    async with async_session() as session:
+                        from sqlalchemy import delete
+                        await session.execute(delete(ScrapedState))
+                        await session.commit()
+                except Exception:
+                    pass
+                unscraped = all_searches
+            
+            # Pick next search (cycle through the list)
+            if current_search_idx >= len(unscraped):
+                current_search_idx = 0
+            role, location, page_offset = unscraped[current_search_idx % len(unscraped)]
+            current_search_idx += 1
 
             live_monitor.update_status(
                 portal="Browser",
-                action=f"Cycle {cycle_count}: Launching browser..."
+                action=f"Cycle {cycle_count}: Searching '{role}' in '{location}' (page {page_offset + 1})..."
             )
+
+            from playwright.async_api import async_playwright
+            headless = os.getenv("PLAYWRIGHT_HEADLESS", "true").lower() == "true"
 
             async with async_playwright() as p:
                 browser = await p.chromium.launch(
@@ -608,13 +778,7 @@ async def _run_continuous_scrape_async():
                 )
                 page = await context.new_page()
 
-                portals = [
-                    ("naukri", f"https://www.naukri.com/{keywords.replace(' ', '-')}-jobs-in-{location.lower().replace(' ', '-')}?experience=0"),
-                    ("indeed", f"https://www.indeed.com/jobs?q={keywords.replace(' ', '+')}&l={location}"),
-                    ("linkedin", f"https://www.linkedin.com/jobs/search/?keywords={keywords.replace(' ', '%20')}&location={location}"),
-                    ("shine", f"https://www.shine.com/job-search/{keywords.replace(' ', '-')}-jobs-in-{location.lower().replace(' ', '-')}"),
-                    ("foundit", f"https://www.foundit.in/srp/results?query={keywords.replace(' ', '+')}&location={location}"),
-                ]
+                portals = _build_portal_urls(role, location, experience_level, page_offset)
 
                 for portal_name, url in portals:
                     if not _live_scraper_running:
@@ -631,13 +795,13 @@ async def _run_continuous_scrape_async():
                         await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
 
                         if portal_name == "linkedin":
-                            await asyncio.sleep(5)
+                            await asyncio.sleep(2)
                             try:
-                                await page.wait_for_selector('.jobs-search__results-list, .scaffold-layout__list, [data-view-name="job-card"]', timeout=15000)
+                                await page.wait_for_selector('.jobs-search__results-list, .scaffold-layout__list, [data-view-name="job-card"]', timeout=10000)
                             except:
                                 pass
                         else:
-                            await asyncio.sleep(3)
+                            await asyncio.sleep(1)
 
                         ss_bytes = await page.screenshot(type="jpeg", full_page=False, quality=60)
                         await live_monitor.set_screenshot(screenshot_bytes=ss_bytes)
@@ -735,6 +899,37 @@ async def _run_continuous_scrape_async():
                                     return true;
                                 }).slice(0, 25);
                             }""")
+                        elif portal_name == "foundit":
+                            # Foundit is an SPA — extract from .srpCardsWrapper cards
+                            await asyncio.sleep(3)  # Wait for SPA to render
+                            jobs = await page.evaluate("""() => {
+                                const jobs = [];
+                                const cards = document.querySelectorAll('.srpCardsWrapper');
+                                for (const card of cards) {
+                                    const lines = card.innerText?.split('\\n').map(l => l.trim()).filter(l => l.length > 0) || [];
+                                    if (lines.length < 2) continue;
+                                    const title = lines[0];
+                                    if (!title || title.length < 4 || title.length > 150) continue;
+                                    const tl = title.toLowerCase();
+                                    if (['showing', 'no result', 'sorry', 'login', 'register'].some(s => tl.startsWith(s))) continue;
+                                    let company = lines[1] || 'Unknown';
+                                    let location = 'Not specified';
+                                    const cityKw = ['hyderabad', 'bangalore', 'chennai', 'mumbai', 'pune', 'delhi', 'remote', 'india'];
+                                    for (let i = 2; i < lines.length; i++) {
+                                        const ll = lines[i].toLowerCase();
+                                        if (cityKw.some(c => ll.includes(c))) { location = lines[i]; break; }
+                                    }
+                                    const searchUrl = 'https://www.foundit.in/srp/results?query=' + encodeURIComponent(title);
+                                    jobs.push({ title, company, location, source_url: searchUrl });
+                                }
+                                const seen = new Set();
+                                return jobs.filter(j => {
+                                    const k = j.title + '|' + j.company;
+                                    if (seen.has(k)) return false;
+                                    seen.add(k);
+                                    return true;
+                                }).slice(0, 15);
+                            }""")
                         else:
                             jobs = await page.evaluate("""() => {
                                 const jobs = [];
@@ -785,118 +980,160 @@ async def _run_continuous_scrape_async():
                                 if len(seen_urls) > 5000:
                                     seen_urls.clear()
 
-                                await page.goto(detail_url, wait_until="domcontentloaded", timeout=20000)
-                                await asyncio.sleep(2)
+                                # Only visit detail pages for first 3 jobs per portal — saves ~48s per cycle
+                                if i < 3:
+                                    await page.goto(detail_url, wait_until="domcontentloaded", timeout=15000)
+                                    await asyncio.sleep(1)
 
-                                description = await page.evaluate("""() => {
-                                    const selectors = [
-                                        '.job-description', '.description__text', '.jobsearch-jobDescriptionText',
-                                        '.jobDescription', '#jobDescriptionText', '.jd-desc',
-                                        '[data-testid="jobDescription"]', '.job-details',
-                                        'article', '.job-description-content'
-                                    ];
-                                    for (const sel of selectors) {
-                                        const el = document.querySelector(sel);
-                                        if (el && el.innerText.trim().length > 50) {
-                                            return el.innerText.trim().substring(0, 5000);
+                                    description = await page.evaluate("""() => {
+                                        const selectors = [
+                                            '.job-description', '.description__text', '.jobsearch-jobDescriptionText',
+                                            '.jobDescription', '#jobDescriptionText', '.jd-desc',
+                                            '[data-testid="jobDescription"]', '.job-details',
+                                            'article', '.job-description-content'
+                                        ];
+                                        for (const sel of selectors) {
+                                            const el = document.querySelector(sel);
+                                            if (el && el.innerText.trim().length > 50) {
+                                                return el.innerText.trim().substring(0, 5000);
+                                            }
                                         }
-                                    }
-                                    const main = document.querySelector('main') || document.querySelector('[role="main"]');
-                                    if (main && main.innerText.length > 100) {
-                                        return main.innerText.trim().substring(0, 5000);
-                                    }
-                                    return '';
-                                }""")
-
-                                company_el = await page.evaluate("""() => {
-                                    const selectors = [
-                                        '.company_name', '.companyName', '[data-company]',
-                                        '.employer-name', '.job-details-company-name',
-                                        '.job-card-container__company-name', '.org-name'
-                                    ];
-                                    for (const sel of selectors) {
-                                        const el = document.querySelector(sel);
-                                        if (el && el.innerText.trim().length > 1) {
-                                            return el.innerText.trim();
+                                        const main = document.querySelector('main') || document.querySelector('[role="main"]');
+                                        if (main && main.innerText.length > 100) {
+                                            return main.innerText.trim().substring(0, 5000);
                                         }
-                                    }
-                                    return '';
-                                }""")
+                                        return '';
+                                    }""")
 
-                                location_el = await page.evaluate("""() => {
-                                    const selectors = [
-                                        '.job-location', '.companyLocation', '.jobDetailsLocation',
-                                        '.job-card-container__metadata-item', '.location'
-                                    ];
-                                    for (const sel of selectors) {
-                                        const el = document.querySelector(sel);
-                                        if (el && el.innerText.trim().length > 1) {
-                                            return el.innerText.trim();
+                                    company_el = await page.evaluate("""() => {
+                                        const selectors = [
+                                            '.company_name', '.companyName', '[data-company]',
+                                            '.employer-name', '.job-details-company-name',
+                                            '.job-card-container__company-name', '.org-name'
+                                        ];
+                                        for (const sel of selectors) {
+                                            const el = document.querySelector(sel);
+                                            if (el && el.innerText.trim().length > 1) {
+                                                return el.innerText.trim();
+                                            }
                                         }
-                                    }
-                                    return '';
-                                }""")
+                                        return '';
+                                    }""")
 
-                                experience_el = await page.evaluate("""() => {
-                                    const text = document.body?.innerText || '';
-                                    const patterns = [
-                                        /(\d+[\+]?\s*(?:to|-)\s*\d+\s*years?)/i,
-                                        /(\d+\s*years?\s*(?:of\s*)?experience)/i,
-                                        /(fresher|entry.?level|junior|senior|lead|principal)/i,
-                                        /(experience:\s*\d+)/i
-                                    ];
-                                    for (const p of patterns) {
-                                        const m = text.match(p);
-                                        if (m) return m[0].substring(0, 100);
-                                    }
-                                    return '';
-                                }""")
-
-                                salary_el = await page.evaluate("""() => {
-                                    const text = document.body?.innerText || '';
-                                    const patterns = [
-                                        /(₹|INR|Rs\.?|USD|\$|€|£)\s*[\d,]+[\s\-to]+[\d,]+/i,
-                                        /(\d+[\-to]+\d+)\s*(?:LPA|lakhs?|per annum|annual|monthly)/i,
-                                        /salary:\s*[\d,]+/i
-                                    ];
-                                    for (const p of patterns) {
-                                        const m = text.match(p);
-                                        if (m) return m[0].substring(0, 100);
-                                    }
-                                    return '';
-                                }""")
-
-                                skills = await page.evaluate("""() => {
-                                    const text = document.body?.innerText || '';
-                                    const techSkills = ['python', 'java', 'javascript', 'typescript', 'react', 'angular',
-                                        'node', 'sql', 'mysql', 'postgresql', 'mongodb', 'aws', 'azure', 'docker',
-                                        'kubernetes', 'git', 'html', 'css', 'django', 'flask', 'fastapi', 'spring',
-                                        'microservices', 'rest', 'graphql', 'linux', 'redis', 'kafka', 'jenkins',
-                                        'ci/cd', 'machine learning', 'data analysis', 'pandas', 'numpy', 'tensorflow',
-                                        'pytorch', 'spark', 'hadoop', 'tableau', 'power bi', 'excel', 'agile', 'scrum'];
-                                    const found = [];
-                                    const lowerText = text.toLowerCase();
-                                    for (const skill of techSkills) {
-                                        if (lowerText.includes(skill)) {
-                                            found.push(skill);
+                                    location_el = await page.evaluate("""() => {
+                                        const selectors = [
+                                            '.job-location', '.companyLocation', '.jobDetailsLocation',
+                                            '.job-card-container__metadata-item', '.location'
+                                        ];
+                                        for (const sel of selectors) {
+                                            const el = document.querySelector(sel);
+                                            if (el && el.innerText.trim().length > 1) {
+                                                return el.innerText.trim();
+                                            }
                                         }
-                                    }
-                                    return found;
-                                }""")
+                                        return '';
+                                    }""")
 
+                                    experience_el = await page.evaluate("""() => {
+                                        const text = document.body?.innerText || '';
+                                        const patterns = [
+                                            /(\\d+[\\+]?\\s*(?:to|-)\\s*\\d+\\s*years?)/i,
+                                            /(\\d+\\s*years?\\s*(?:of\\s*)?experience)/i,
+                                            /(fresher|entry.?level|junior|senior|lead|principal)/i,
+                                            /(experience:\\s*\\d+)/i
+                                        ];
+                                        for (const p of patterns) {
+                                            const m = text.match(p);
+                                            if (m) return m[0].substring(0, 100);
+                                        }
+                                        return '';
+                                    }""")
+
+                                    salary_el = await page.evaluate("""() => {
+                                        const text = document.body?.innerText || '';
+                                        const patterns = [
+                                            /(₹|INR|Rs\\.?|USD|\\$|€|£)\\s*[\\d,]+[\\s\\-to]+[\\d,]+/i,
+                                            /(\\d+[\\-to]+\\d+)\\s*(?:LPA|lakhs?|per annum|annual|monthly)/i,
+                                            /salary:\\s*[\\d,]+/i
+                                        ];
+                                        for (const p of patterns) {
+                                            const m = text.match(p);
+                                            if (m) return m[0].substring(0, 100);
+                                        }
+                                        return '';
+                                    }""")
+
+                                    skills = await page.evaluate("""() => {
+                                        const text = document.body?.innerText || '';
+                                        const techSkills = ['python', 'java', 'javascript', 'typescript', 'react', 'angular',
+                                            'node', 'sql', 'mysql', 'postgresql', 'mongodb', 'aws', 'azure', 'docker',
+                                            'kubernetes', 'git', 'html', 'css', 'django', 'flask', 'fastapi', 'spring',
+                                            'microservices', 'rest', 'graphql', 'linux', 'redis', 'kafka', 'jenkins',
+                                            'ci/cd', 'machine learning', 'data analysis', 'pandas', 'numpy', 'tensorflow',
+                                            'pytorch', 'spark', 'hadoop', 'tableau', 'power bi', 'excel', 'agile', 'scrum'];
+                                        const found = [];
+                                        const lowerText = text.toLowerCase();
+                                        for (const skill of techSkills) {
+                                            if (lowerText.includes(skill)) {
+                                                found.push(skill);
+                                            }
+                                        }
+                                        return found;
+                                    }""")
+
+                                    record = JobRecord(
+                                        title=job.get("title", "Unknown")[:500],
+                                        company=(company_el or job.get("company", "Unknown"))[:500],
+                                        location=(location_el or job.get("location", "Unknown"))[:500],
+                                        description=description,
+                                        source=portal_name,
+                                        source_url=detail_url,
+                                        apply_url=detail_url,
+                                        external_id=detail_url,
+                                        salary=salary_el[:500] if salary_el else "",
+                                        experience_required=experience_el[:500] if experience_el else "",
+                                        skills_required=skills,
+                                        remote="remote" in job.get("title", "").lower() or "remote" in job.get("location", "").lower(),
+                                    )
+                                else:
+                                    # Skip detail page — save from list view directly
+                                    record = JobRecord(
+                                        title=job.get("title", "Unknown")[:500],
+                                        company=job.get("company", "Unknown")[:500],
+                                        location=job.get("location", "Unknown")[:500],
+                                        description="",
+                                        source=portal_name,
+                                        source_url=detail_url,
+                                        apply_url=detail_url,
+                                        external_id=detail_url,
+                                        remote="remote" in job.get("title", "").lower() or "remote" in job.get("location", "").lower(),
+                                    )
+
+                                all_records.append(record)
+
+                                live_monitor.add_job({
+                                    "title": job.get("title", "Unknown"),
+                                    "company": job.get("company", "Unknown"),
+                                    "location": job.get("location", "Unknown"),
+                                    "portal": portal_name
+                                })
+
+                                if (i + 1) % 5 == 0:
+                                    live_monitor.update_status(
+                                        portal=portal_name,
+                                        action=f"Cycle {cycle_count}: {portal_name} - {i + 1}/{len(jobs)} jobs processed"
+                                    )
+
+                            except Exception as e:
                                 record = JobRecord(
                                     title=job.get("title", "Unknown")[:500],
-                                    company=(company_el or job.get("company", "Unknown"))[:500],
-                                    location=(location_el or job.get("location", "Unknown"))[:500],
-                                    description=description,
+                                    company=job.get("company", "Unknown")[:500],
+                                    location=job.get("location", "Unknown")[:500],
+                                    description="",
                                     source=portal_name,
-                                    source_url=detail_url,
-                                    apply_url=detail_url,
-                                    external_id=detail_url,
-                                    salary=salary_el[:500] if salary_el else "",
-                                    experience_required=experience_el[:500] if experience_el else "",
-                                    skills_required=skills,
-                                    remote="remote" in job.get("title", "").lower() or "remote" in job.get("location", "").lower(),
+                                    source_url=job.get("source_url", ""),
+                                    apply_url=job.get("source_url", ""),
+                                    external_id=job.get("source_url", ""),
                                 )
                                 all_records.append(record)
 
@@ -930,7 +1167,9 @@ async def _run_continuous_scrape_async():
                             portal=portal_name,
                             action=f"Cycle {cycle_count}: {portal_name} complete. {len(jobs)} jobs extracted."
                         )
-                        await asyncio.sleep(2)
+                        # Mark this portal+query+page as scraped so we don't repeat it
+                        await _save_scraped_state(portal_name, role.lower().strip(), page_offset)
+                        await asyncio.sleep(1)
 
                     except Exception as e:
                         err = str(e)[:100]
@@ -971,7 +1210,7 @@ async def _run_continuous_scrape_async():
                 pass
 
         if _live_scraper_running:
-            await asyncio.sleep(60)
+            await asyncio.sleep(30)
 
     live_monitor.update_status(action="Scraping stopped")
     logger.info("Live scraper stopped after %d cycles", cycle_count)
@@ -1788,42 +2027,6 @@ async def get_my_profile(user=Depends(get_current_user)):
             "resume_text": resume.text_content if resume else "",
             "experience_years": resume.experience_years if resume else 0,
         }
-
-
-@app.get("/me/matches")
-async def get_my_matches(user=Depends(get_current_user), limit: int = Query(50, ge=1, le=200), min_score: float = Query(0, ge=0, le=100)):
-    """Get jobs matched against user's resume."""
-    from database.engine import async_session
-    from database.models import Job, JobMatch
-    from sqlalchemy import select
-
-    async with async_session() as session:
-        result = await session.execute(
-            select(Job, JobMatch)
-            .join(JobMatch, Job.id == JobMatch.job_id, isouter=True)
-            .order_by(JobMatch.overall_score.desc().nullslast())
-            .limit(limit)
-        )
-        rows = result.all()
-
-        matches = []
-        for job, match in rows:
-            matches.append({
-                "id": job.id,
-                "title": job.title,
-                "company": job.company,
-                "location": job.location,
-                "source": job.source,
-                "source_url": job.source_url,
-                "apply_url": job.apply_url,
-                "match": {
-                    "score": match.overall_score if match else job.match_score or 0,
-                    "matched_skills": match.matched_skills if match else [],
-                },
-                "ats_score": job.ats_score,
-            })
-
-        return {"matches": matches, "count": len(matches)}
 
 
 @app.post("/me/resume")

@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { fetchMyMatches, fetchIngestionStatus, logout, getToken, seedDemoJobs } from '../lib/api.js';
+import { fetchMyMatches, fetchIngestionStatus, logout, getToken, triggerMatchScrape } from '../lib/api.js';
 import { useUserProfile } from '../context/UserProfileContext.jsx';
 import OnboardingDialog from '../components/OnboardingDialog.jsx';
 import JobCard from '../components/JobCard.jsx';
@@ -13,6 +13,7 @@ export default function Matches() {
   const [error, setError] = useState('');
   const [ingestionStatus, setIngestionStatus] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [scraping, setScraping] = useState(false);
   const navigate = useNavigate();
 
   // Debug: Check token on mount
@@ -26,6 +27,59 @@ export default function Matches() {
     setRefreshKey(k => k + 1);
     setFetching(true);
     setError('');
+  }, []);
+
+  // Subscribe to SSE for live scrape updates (with auto-reconnect)
+  useEffect(() => {
+    let retryTimeout = null;
+    let closed = false;
+
+    const connect = () => {
+      if (closed) return;
+      const es = new EventSource('/me/matches/events');
+      es.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data.type === 'matches_updated') {
+            setRefreshKey(k => k + 1);
+          }
+        } catch {}
+      };
+      es.onerror = () => {
+        es.close();
+        if (!closed) {
+          retryTimeout = setTimeout(connect, 5000);
+        }
+      };
+      return es;
+    };
+
+    const es = connect();
+    return () => {
+      closed = true;
+      if (retryTimeout) clearTimeout(retryTimeout);
+      if (es) es.close();
+    };
+  }, []);
+
+  // Polling fallback: refresh matches every 10s for near-real-time updates
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (!needsOnboarding && !scraping) {
+        setRefreshKey(k => k + 1);
+      }
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [needsOnboarding, scraping]);
+
+  // Trigger scrape for user's target roles
+  const handleScrapeNow = useCallback(async () => {
+    setScraping(true);
+    try {
+      await triggerMatchScrape();
+    } catch (e) {
+      // ignore — SSE will fire when scrape finishes
+    }
   }, []);
 
   useEffect(() => {
@@ -53,6 +107,7 @@ export default function Matches() {
       console.log('Fetching matches, needsOnboarding:', needsOnboarding, 'profile:', !!profile);
       fetchMyMatches({ limit: 48 })
         .then((data) => {
+          console.log('Matches response:', data);
           if (active) {
             const matchedJobs = data.matches || [];
             setMatches(matchedJobs);
@@ -60,6 +115,7 @@ export default function Matches() {
           }
         })
         .catch((e) => {
+          console.log('Matches error:', e.message);
           if (active) setError(e.message);
           console.error('fetchMyMatches error:', e.message);
           if (e.message.includes('401')) {
@@ -132,13 +188,7 @@ export default function Matches() {
     });
   }, [loading, needsOnboarding, fetching, matches.length, error, profile]);
 
-  // Try to seed demo jobs if pool is low and no auth error
-  useEffect(() => {
-    if (error && !error.includes('401') && !error.includes('No resume') && matches.length === 0) {
-      // Auto-seed demo jobs on error (likely backend issues)
-      seedDemoJobs().catch(() => {});
-    }
-  }, [error]);
+  
 
   if (loading) {
     return (
@@ -212,6 +262,13 @@ export default function Matches() {
             className="ml-4 text-aqua text-xs hover:underline transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]"
           >
             Refresh
+          </button>
+          <button 
+            onClick={handleScrapeNow}
+            disabled={scraping}
+            className="ml-3 text-amber-300 text-xs hover:underline transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] disabled:opacity-40"
+          >
+            {scraping ? 'Scraping...' : 'Scrape Now'}
           </button>
         </p>
 

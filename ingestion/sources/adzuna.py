@@ -21,8 +21,25 @@ class AdzunaSource(BaseIngestionSource):
         self._app_id = os.getenv("ADZUNA_APP_ID", "")
         self._app_key = os.getenv("ADZUNA_APP_KEY", "")
         self._country = os.getenv("ADZUNA_COUNTRY", "in")
-        self._query = os.getenv("ADZUNA_QUERY", "developer")
+        self._query = os.getenv("ADZUNA_QUERY", "").strip()
+        if not self._query:
+            self._query = self._fetch_query_from_db()
         self._results = int(os.getenv("ADZUNA_RESULTS", "50"))
+
+    @staticmethod
+    def _fetch_query_from_db():
+        try:
+            import sqlite3, json
+            db_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "career_agent.db")
+            conn = sqlite3.connect(db_path)
+            row = conn.execute("SELECT desired_roles FROM user_preferences ORDER BY id DESC LIMIT 1").fetchone()
+            conn.close()
+            if row and row[0]:
+                roles = json.loads(row[0])
+                return roles[0] if roles else ""
+        except Exception:
+            pass
+        return ""
 
     @property
     def is_active(self) -> bool:

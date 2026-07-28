@@ -1,5 +1,5 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { fetchMyProfile, saveUserProfile, getToken, setToken } from '../lib/api.js';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import { fetchMyProfile, getToken, setToken } from '../lib/api.js';
 
 const UserProfileContext = createContext(null);
 
@@ -13,11 +13,18 @@ export function UserProfileProvider({ children }) {
   const [profile, setProfile] = useState(null);
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   const [loading, setLoading] = useState(true);
+  const justCompletedOnboarding = useRef(false);
 
   // Re-run effect when token changes (detects login)
   const token = getToken();
 
   useEffect(() => {
+    // Skip fetch if we just completed onboarding (profile already set)
+    if (justCompletedOnboarding.current) {
+      justCompletedOnboarding.current = false;
+      return;
+    }
+
     // Check if user has profile - only if they have a token
     
     // No token means no user - clear profile and require login
@@ -34,8 +41,11 @@ export function UserProfileProvider({ children }) {
         if (data.has_resume && data.target_roles?.length > 0) {
           setProfile(data);
           setNeedsOnboarding(false);
+        } else if (data.has_resume && !data.target_roles?.length) {
+          // Has resume but no target roles - still need to complete onboarding
+          setNeedsOnboarding(true);
         } else {
-          // No resume or no target roles - need onboarding
+          // No resume - need onboarding
           setNeedsOnboarding(true);
         }
       })
@@ -58,6 +68,7 @@ export function UserProfileProvider({ children }) {
   };
 
   const completeOnboarding = (profileData) => {
+    justCompletedOnboarding.current = true;
     setProfile(profileData);
     setNeedsOnboarding(false);
   };

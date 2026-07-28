@@ -14,7 +14,10 @@ export function setToken(token) {
 
 async function request(path, options = {}) {
   const headers = { ...(options.headers || {}) };
-  // Only add Content-Type for JSON requests
+  // Auto-stringify plain objects for JSON requests
+  if (!(options.body instanceof FormData) && typeof options.body === 'object' && options.body !== null) {
+    options.body = JSON.stringify(options.body);
+  }
   if (!(options.body instanceof FormData) && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json';
   }
@@ -82,6 +85,22 @@ export function fetchMyMatches({ limit = 30, minScore = 0 } = {}) {
 // Alias for compatibility
 export const fetchMatches = fetchMyMatches;
 
+export function subscribeMatchEvents(onUpdate) {
+  const es = new EventSource('/me/matches/events');
+  es.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.type === 'matches_updated') onUpdate(data);
+    } catch {}
+  };
+  es.onerror = () => {};
+  return () => es.close();
+}
+
+export function triggerMatchScrape() {
+  return request('/me/matches/scrape', { method: 'POST' });
+}
+
 export function fetchMyProfile() {
   return request('/me/profile');
 }
@@ -137,6 +156,10 @@ export function generateResume(jobId) {
   return request(`/me/jobs/${jobId}/resume`, { method: 'POST' });
 }
 
+export function getSavedContacts(jobId) {
+  return request(`/me/jobs/${jobId}/contacts`);
+}
+
 export function findContacts(jobId, domain = '', candidateNames = []) {
   return request(`/me/jobs/${jobId}/contacts`, {
     method: 'POST',
@@ -149,6 +172,18 @@ export function draftOutreach(jobId, contactName, channel = 'email') {
     method: 'POST',
     body: JSON.stringify({ job_id: jobId, contact_name: contactName, channel }),
   });
+}
+
+export function checkLinkedInStatus() {
+  return request('/me/linkedin/status');
+}
+
+export function linkedinLogin() {
+  return request('/me/linkedin/login', { method: 'POST' });
+}
+
+export function linkedinLogout() {
+  return request('/me/linkedin/logout', { method: 'POST' });
 }
 
 export function fetchAdminOverview() {

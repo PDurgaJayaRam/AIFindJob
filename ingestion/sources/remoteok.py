@@ -61,6 +61,13 @@ class RemoteOKSource(BaseIngestionSource):
                     posted = None
             url = (item.get("url") or "").strip()
             apply_url = (item.get("apply_url") or url).strip()
+            slug = item.get("slug") or ""
+            raw_id = item.get("id")
+            # Stable per-source id: RemoteOK's integer id is unique and
+            # durable; combine with slug when present for debuggability.
+            external_id = ""
+            if raw_id is not None:
+                external_id = f"{raw_id}" if not slug else f"{raw_id}-{slug}"
             records.append(
                 JobRecord(
                     title=position,
@@ -71,6 +78,7 @@ class RemoteOKSource(BaseIngestionSource):
                     source_url=url,
                     apply_url=apply_url,
                     salary=_format_salary(item),
+                    external_id=external_id,
                     remote=True,
                     skills_required=[str(t) for t in tags],
                     posted_date=posted,
