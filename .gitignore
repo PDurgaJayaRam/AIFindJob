@@ -4,6 +4,11 @@ __pycache__/
 .env
 data/*.db
 data/screenshots/
+data/generated_resumes/
+data/exports/
+data/.matches_signal
+*.docx
+*.pdf
 *.egg-info/
 dist/
 build/
