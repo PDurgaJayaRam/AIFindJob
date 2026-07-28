@@ -74,14 +74,20 @@ def _extract_personal_details(text: str) -> dict[str, str]:
             break
     
     # Extract LinkedIn
-    linkedin_match = re.search(r'linkedin\.com/in/[\w\-]+', text, re.IGNORECASE)
+    linkedin_match = re.search(r'(?:https?://)?(?:www\.)?linkedin\.com/in/[\w\-]+', text, re.IGNORECASE)
     if linkedin_match:
-        details["linkedin"] = linkedin_match.group(0)
-    
+        val = linkedin_match.group(0)
+        if not val.startswith("http"):
+            val = "https://www." + val
+        details["linkedin"] = val
+
     # Extract GitHub
-    github_match = re.search(r'github\.com/[\w\-]+', text, re.IGNORECASE)
+    github_match = re.search(r'(?:https?://)?(?:www\.)?github\.com/[\w\-]+', text, re.IGNORECASE)
     if github_match:
-        details["github"] = github_match.group(0)
+        val = github_match.group(0)
+        if not val.startswith("http"):
+            val = "https://" + val
+        details["github"] = val
     
     # Try to extract name (first non-empty line that's not an email/phone)
     lines = [l.strip() for l in text.split('\n') if l.strip()]
@@ -485,4 +491,153 @@ def preserve_original_format(text: str) -> dict[str, Any]:
             "has_education": any(kw in text.lower() for kw in ['education', 'university', 'college', 'b.tech', 'bachelor']),
             "has_skills": any(kw in text.lower() for kw in ['skills', 'technologies', 'tech stack']),
         }
+    }
+
+
+def analyze_experience_level(text: str) -> dict[str, Any]:
+    """Analyze resume content to determine real experience level.
+    
+    Uses AI to read and understand the resume like a human would.
+    Falls back to fast regex heuristics if AI is unavailable.
+    
+    Returns:
+        {
+            "level": "fresher" | "junior" | "mid" | "senior",
+            "confidence": 0.0-1.0,
+            "reasons": ["why this level was chosen"],
+            "raw_analysis": "AI's full analysis text"
+        }
+    """
+    if not text or len(text.strip()) < 20:
+        return {"level": "fresher", "confidence": 0.5, "reasons": ["No resume content"], "raw_analysis": ""}
+    
+    # Try AI analysis first — this is the real understanding
+    try:
+        import asyncio
+        from ai.ai_client import get_ai_client
+        
+        ai = get_ai_client()
+        
+        prompt = f"""Read this resume carefully and analyze the candidate's experience level like a hiring manager would.
+
+RESUME:
+{text[:4000]}
+
+ANALYZE THESE ASPECTS:
+1. What is their education status? (pursuing degree, graduated, which year?)
+2. What work experience do they actually have? (internships only? full-time jobs? how long?)
+3. What job titles do they hold? (intern, junior, senior, lead?)
+4. What is the complexity of their projects? (academic course projects vs production systems?)
+5. How deep are their skills? (learning basics vs expert-level mastery?)
+6. Overall: Is this a fresher, junior, mid-level, or senior professional?
+
+Be honest and precise. A fresher with 1 internship is NOT a senior developer just because they know some technologies.
+
+Respond in this EXACT JSON format:
+{{
+    "level": "fresher" or "junior" or "mid" or "senior",
+    "confidence": 0.0 to 1.0,
+    "reasons": ["reason 1", "reason 2", ...],
+    "education_status": "pursuing" or "graduated" or "unknown",
+    "work_experience_summary": "brief summary of actual work experience",
+    "has_internship_only": true or false,
+    "has_full_time_jobs": true or false,
+    "years_of_real_experience": number or 0
+}}"""
+
+        response = asyncio.run(ai.chat_completion(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=800,
+        ))
+        
+        if response:
+            import json
+            # Clean and parse JSON response
+            response = response.strip()
+            if response.startswith("```"):
+                lines = response.split("\n")
+                lines = [l for l in lines[1:] if not l.strip().startswith("```")]
+                response = "\n".join(lines)
+            
+            analysis = json.loads(response)
+            
+            level = analysis.get("level", "fresher").lower()
+            if level not in ("fresher", "junior", "mid", "senior"):
+                level = "fresher"
+            
+            return {
+                "level": level,
+                "confidence": float(analysis.get("confidence", 0.7)),
+                "reasons": analysis.get("reasons", ["AI analyzed resume"]),
+                "raw_analysis": response,
+                "education_status": analysis.get("education_status", "unknown"),
+                "has_internship_only": analysis.get("has_internship_only", True),
+                "has_full_time_jobs": analysis.get("has_full_time_jobs", False),
+                "years_of_real_experience": analysis.get("years_of_real_experience", 0),
+            }
+    except Exception as e:
+        logger.warning("AI resume analysis failed, using fallback: %s", e)
+    
+    # Fallback: fast regex heuristics (no AI available)
+    return _fallback_experience_analysis(text)
+
+
+def _fallback_experience_analysis(text: str) -> dict[str, Any]:
+    """Fast regex-based fallback when AI is unavailable."""
+    text_lower = text.lower()
+    reasons = []
+    score = 0
+    
+    # Internship signals
+    has_internship = any(kw in text_lower for kw in ['intern', 'internship', 'trainee'])
+    if has_internship:
+        score -= 2
+        reasons.append("Contains internship references")
+    
+    # Education stage
+    is_pursuing = any(kw in text_lower for kw in ['pursuing', 'expected', 'pre-final', 'final year', 'semester', 'cgpa', 'sgpa'])
+    if is_pursuing:
+        score -= 3
+        reasons.append("Currently pursuing degree")
+    
+    # Senior signals
+    senior_kw = ['senior', 'lead', 'principal', 'staff', 'architect', 'director', 'vp', 'head of']
+    found_senior = [kw for kw in senior_kw if kw in text_lower]
+    if found_senior:
+        score += 3
+        reasons.append(f"Senior keywords: {found_senior[:3]}")
+    
+    # Years of experience
+    year_matches = re.findall(r'(\d+)\+?\s*years?\s*(?:of\s*)?(?:experience|exp)', text_lower)
+    if year_matches:
+        max_years = max(int(y) for y in year_matches)
+        score += min(max_years, 5)
+        reasons.append(f"Mentions {max_years} years experience")
+    
+    # Fresher keywords
+    fresher_kw = ['fresher', 'fresh graduate', 'entry level', 'no prior experience']
+    found_fresher = [kw for kw in fresher_kw if kw in text_lower]
+    if found_fresher:
+        score -= 2
+        reasons.append(f"Fresher keywords: {found_fresher}")
+    
+    # Map score to level
+    if score <= -2:
+        level = "fresher"
+    elif score <= 1:
+        level = "junior"
+    elif score <= 4:
+        level = "mid"
+    else:
+        level = "senior"
+    
+    if not reasons:
+        reasons.append("Fallback analysis — no strong signals")
+    
+    return {
+        "level": level,
+        "confidence": 0.6,
+        "reasons": reasons,
+        "raw_analysis": "regex fallback",
     }

@@ -48,8 +48,8 @@ def build_router(get_current_user: Callable) -> APIRouter:
             text = resume.text_content or ""
             
             email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text) if text else None
-            phone_match = re.search(r'[\d\s\+\-\(\)]{7,15}', text) if text else None
-            linkedin_match = re.search(r'linkedin\.com/in/[\w\-]+', text, re.IGNORECASE) if text else None
+            phone_match = re.search(r'[\+]?[\d\s\-\(\)]{7,20}', text) if text else None
+            linkedin_match = re.search(r'(?:https?://)?(?:www\.)?linkedin\.com/in/[\w\-]+', text, re.IGNORECASE) if text else None
             github_match = re.search(r'github\.com/[\w\-]+', text, re.IGNORECASE) if text else None
             
             education_list = parsed_sections.get("education", [])
@@ -122,9 +122,15 @@ def build_router(get_current_user: Callable) -> APIRouter:
         
         PRESERVES original resume while optimizing for the target job.
         """
+        logger.info("Generating resume for user=%d, job=%d", user.id, job_id)
         profile = await _load_profile(user.id)
         if not profile:
             raise HTTPException(status_code=404, detail="No resume found. POST /me/resume first.")
+        
+        logger.info("Profile loaded: name=%s, skills=%d, experience=%s, education=%s",
+                    profile.get("name", "?"), len(profile.get("skills", [])),
+                    "yes" if profile.get("experience") else "no",
+                    "yes" if profile.get("education") else "no")
 
         async with async_session() as session:
             job_row = await session.execute(select(Job).where(Job.id == job_id))
@@ -144,6 +150,13 @@ def build_router(get_current_user: Callable) -> APIRouter:
         # Generate optimized resume with 4-agent pipeline
         resume_text, mode, analysis = await tailor_resume(profile, job_data)
         
+        # Validate: ensure we have real content before writing files
+        if not resume_text or len(resume_text.strip()) < 50:
+            logger.error("Resume generation produced empty/too-short output (%d chars). Mode: %s", len(resume_text or ""), mode)
+            raise HTTPException(status_code=500, detail=f"Resume generation failed — got {len(resume_text or '')} chars. Check logs.")
+        
+        logger.info("Generated resume: %d chars, mode=%s", len(resume_text), mode)
+        
         # Calculate match data
         match_score = analysis.get("match_score", 0)
         matching_skills = analysis.get("matching_skills", [])
@@ -158,9 +171,9 @@ def build_router(get_current_user: Callable) -> APIRouter:
         pdf_filename = f"resume_user{user.id}_job{job_id}.pdf"
         docx_path = os.path.join(_OUTPUT_DIR, docx_filename)
         pdf_path = os.path.join(_OUTPUT_DIR, pdf_filename)
-        write_docx(resume_text, docx_path)
+        write_docx(resume_text, docx_path, profile_name=profile.get("name", ""))
         try:
-            write_pdf(resume_text, pdf_path)
+            write_pdf(resume_text, pdf_path, profile_name=profile.get("name", ""))
         except Exception as e:
             logger.info(f"PDF generation fallback: {e}")
             pdf_path = None
